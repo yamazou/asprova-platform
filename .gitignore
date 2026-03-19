@@ -16,7 +16,7 @@ data/*.db
 venv/
 ENV/
 
-# IDE（.vscode は上で除外済み）
+# IDE
 .idea/
 *.swp
 *.swo
