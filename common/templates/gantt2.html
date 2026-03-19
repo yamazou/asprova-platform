@@ -1,0 +1,638 @@
+{% extends "base.html" %}
+{% block title %}Gantt Chart — Asprova Schedule Viewer{% endblock %}
+
+{% block extra_styles %}
+<style>
+.gantt-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.gantt-scroll-wrap {
+    overflow-x: auto;
+    overflow-y: auto;
+}
+
+.gantt-table {
+    border-collapse: collapse;
+    min-width: 100%;
+    table-layout: fixed;
+}
+
+.gantt-row-label {
+    width: 180px;
+    min-width: 180px;
+    max-width: 180px;
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+    z-index: 10;
+    border-right: 2px solid var(--border);
+}
+
+.gantt-header-label {
+    width: 180px;
+    min-width: 180px;
+    max-width: 180px;
+    position: sticky;
+    left: 0;
+    background: var(--surface2);
+    z-index: 20;
+    border-right: 2px solid var(--border);
+}
+
+.gantt-th {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 8px 4px;
+    text-align: center;
+    border-right: 1px solid rgba(30,58,95,0.5);
+    background: var(--surface2);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    white-space: nowrap;
+    vertical-align: bottom;
+    user-select: none;
+}
+
+.gantt-th.hour-marker {
+    border-right: 1px solid var(--border);
+    color: var(--text);
+}
+
+.gantt-cell {
+    position: relative;
+    padding: 4px;
+    height: 48px;
+    vertical-align: top;
+    border-right: 1px solid rgba(30,58,95,0.3);
+    border-bottom: 1px solid rgba(30,58,95,0.3);
+}
+
+.gantt-cell.hour-cell {
+    border-right: 1px solid var(--border);
+}
+
+.gantt-label-cell {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(30,58,95,0.4);
+    background: var(--surface);
+}
+
+.gantt-links {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.gantt-links-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.gantt-machine-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: #000000;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gantt-bar {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    border-radius: 3px;
+    border: 1px solid;
+    display: flex;
+    align-items: center;
+    padding: 0 6px;
+    cursor: pointer;
+    transition: filter 0.1s, transform 0.1s;
+    /* Allow label to extend beyond short bars (overlap is OK) */
+    overflow: visible;
+    min-width: 4px;
+    z-index: 2;
+}
+
+.gantt-setup {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    background: rgba(0,0,0,0.25);
+    width: 2px;
+    pointer-events: none;
+}
+
+.gantt-bar:hover {
+    filter: brightness(1.3);
+    z-index: 10;
+}
+
+.gantt-bar-text {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    white-space: normal;
+    font-weight: 500;
+    pointer-events: none;
+    line-height: 1.15;
+}
+
+/* Tooltip */
+.tooltip {
+    position: fixed;
+    background: var(--surface2);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    z-index: 1000;
+    max-width: 280px;
+    pointer-events: none;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    display: none;
+}
+
+.tooltip-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+}
+
+.tooltip-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 3px;
+}
+
+.tooltip-label {
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    width: 70px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.tooltip-val {
+    color: var(--text-bright);
+    font-size: 11px;
+}
+
+/* Now line */
+.now-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(255,107,53,0.8);
+    z-index: 15;
+    pointer-events: none;
+}
+
+.now-line::before {
+    content: 'NOW';
+    position: absolute;
+    top: 0;
+    left: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    color: var(--accent2);
+    white-space: nowrap;
+}
+
+.empty-gantt {
+    padding: 80px 40px;
+    text-align: center;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="page-title">Gantt Chart</div>
+        <div class="page-subtitle">
+            {% if view == 'weekly' %}
+                Week of {{ start_date.strftime('%b %d') }} – {{ end_date.strftime('%b %d, %Y') }}
+            {% else %}
+                {{ current_date.strftime('%A, %B %d, %Y') }}
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="controls">
+    <div class="view-toggle">
+        <a href="?view=daily&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'daily' %}active{% endif %}">Daily</a>
+        <a href="?view=weekly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'weekly' %}active{% endif %}">Weekly</a>
+        <a href="?view=2week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '2week' %}active{% endif %}">2 Week</a>
+        <a href="?view=3week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '3week' %}active{% endif %}">3 Week</a>
+        <a href="?view=monthly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'monthly' %}active{% endif %}">Monthly</a>
+    </div>
+
+    <div class="nav-arrows">
+        <a href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
+        <span class="date-label">
+            {% if view != 'daily' %}
+                {{ start_date.strftime('%b %d') }} – {{ end_date.strftime('%b %d') }}
+            {% else %}
+                {{ current_date.strftime('%Y-%m-%d') }}
+            {% endif %}
+        </span>
+        <a href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
+    </div>
+
+    <a href="?view={{ view }}&date=&machine={{ machine_filter }}&item={{ item_filter }}" class="btn btn-primary btn-sm">Today</a>
+
+    <form method="GET" style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+        <input type="hidden" name="view" value="{{ view }}">
+        <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
+        <select name="chart_kind" onchange="this.form.submit()">
+            <option value="resource">Resource Gantt Chart</option>
+            <option value="order" disabled>Order Gantt Chart</option>
+        </select>
+        <select name="item" onchange="this.form.submit()">
+            <option value="">Not Selected</option>
+            <option value="__ALL__" {% if item_filter == '__ALL__' %}selected{% endif %}>All Items</option>
+            {% for it in order_items %}
+            <option value="{{ it.order_item_code }}" {% if item_filter == it.order_item_code %}selected{% endif %}>{{ it.order_item_code }}</option>
+            {% endfor %}
+        </select>
+        <select name="machine" onchange="this.form.submit()">
+            <option value="">All Machines</option>
+            {% for m in machines %}
+            <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+<div class="gantt-container" id="gantt-wrapper">
+    {% if tasks %}
+    <div id="gantt-root"></div>
+    {% else %}
+    <div class="empty-gantt">
+        <div style="font-size:48px; opacity:0.2; margin-bottom:16px;">📊</div>
+        <div style="color:var(--text-dim); font-size:16px; margin-bottom:8px;">No operations in this period</div>
+        <div style="color:var(--text-dim); font-size:13px; margin-bottom:24px;">Navigate to a different date or import data</div>
+        <a href="/upload" class="btn btn-primary">Import CSV</a>
+    </div>
+    {% endif %}
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const TASKS = {{ tasks | tojson }};
+const VIEW = "{{ view }}";
+const START_DATE = new Date("{{ start_date.strftime('%Y-%m-%dT00:00:00') }}");
+const END_DATE = new Date("{{ end_date.strftime('%Y-%m-%dT00:00:00') }}");
+const ITEM_FILTER = "{{ item_filter or '' }}";
+
+const COLORS = [
+    { bg: 'rgba(0,212,255,0.15)', border: 'rgba(0,212,255,0.6)', text: '#00d4ff' },
+    { bg: 'rgba(255,107,53,0.15)', border: 'rgba(255,107,53,0.6)', text: '#ff6b35' },
+    { bg: 'rgba(57,255,20,0.15)', border: 'rgba(57,255,20,0.6)', text: '#39ff14' },
+    { bg: 'rgba(255,170,0,0.15)', border: 'rgba(255,170,0,0.6)', text: '#ffaa00' },
+    { bg: 'rgba(180,100,255,0.15)', border: 'rgba(180,100,255,0.6)', text: '#b464ff' },
+    { bg: 'rgba(255,64,129,0.15)', border: 'rgba(255,64,129,0.6)', text: '#ff4081' },
+    { bg: 'rgba(0,230,180,0.15)', border: 'rgba(0,230,180,0.6)', text: '#00e6b4' },
+    { bg: 'rgba(255,220,50,0.15)', border: 'rgba(255,220,50,0.6)', text: '#ffdc32' },
+];
+
+function getStatusColor(status) {
+    const s = (status || '').toLowerCase();
+    if (s.includes('progress') || s.includes('running')) return { bg: 'rgba(255,170,0,0.2)', border: 'rgba(255,170,0,0.7)', text: '#ffaa00' };
+    if (s.includes('complete') || s.includes('done')) return { bg: 'rgba(0,204,102,0.2)', border: 'rgba(0,204,102,0.7)', text: '#00cc66' };
+    return null;
+}
+
+if (TASKS.length > 0) {
+    renderGantt();
+}
+
+function escapeHtml(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function getItemKey(task) {
+    // Color by order item code (preferred), not by machine.
+    return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
+}
+
+function renderGantt() {
+    const container = document.getElementById('gantt-root');
+    const totalMs = END_DATE - START_DATE;
+
+    // Get unique machines (rows)
+    const machineSet = [...new Set(TASKS.map(t => t.machine))].sort();
+    
+    // Color map by item key (consistent across machines)
+    const itemSet = [...new Set(TASKS.map(getItemKey))].sort();
+    const itemColorMap = {};
+    itemSet.forEach((k, i) => itemColorMap[k] = COLORS[i % COLORS.length]);
+
+    // Build time slots
+    const slots = [];
+    if (VIEW === 'daily') {
+        // Hours
+        for (let h = 0; h < 24; h++) {
+            slots.push({ label: h.toString().padStart(2,'0') + ':00', hours: 1 });
+        }
+    } else {
+        // Days
+        const cur = new Date(START_DATE);
+        while (cur < END_DATE) {
+            slots.push({
+                label: cur.toLocaleDateString('en', {weekday:'short', month:'short', day:'numeric'}),
+                hours: 24,
+                date: new Date(cur)
+            });
+            cur.setDate(cur.getDate() + 1);
+        }
+    }
+
+    const CELL_PX = VIEW === 'daily' ? 60 : 120;
+    const LABEL_W = 180;
+
+    // Build table HTML
+    let html = '<div class="gantt-scroll-wrap"><div class="gantt-overlay-wrap" style="position:relative;">';
+    html += '<svg class="gantt-links-overlay" id="gantt-links-overlay"></svg>';
+    html += '<table class="gantt-table">';
+
+    // Header row
+    html += '<thead><tr>';
+    html += `<th class="gantt-th gantt-header-label" style="text-align:left; padding-left:12px; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-dim);">MACHINE / RESOURCE</th>`;
+    slots.forEach((slot, i) => {
+        const isHour = VIEW === 'daily';
+        html += `<th class="gantt-th${isHour && i % 1 === 0 ? ' hour-marker' : ''}" style="width:${CELL_PX}px; min-width:${CELL_PX}px;">${slot.label}</th>`;
+    });
+    html += '</tr></thead>';
+
+    // Body
+    html += '<tbody>';
+    machineSet.forEach(machine => {
+        const machineTasks = TASKS.filter(t => t.machine === machine);
+
+        html += '<tr>';
+        html += `<td class="gantt-label-cell gantt-row-label">
+            <div class="gantt-machine-name" title="${machine}">${machine}</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--text-dim); margin-top:2px;">${machineTasks.length} op${machineTasks.length !== 1 ? 's' : ''}</div>
+        </td>`;
+
+        // Render all time cells as one wide cell with relative positioning
+        const totalWidth = slots.length * CELL_PX;
+        html += `<td colspan="${slots.length}" style="position:relative; height:48px; padding:0; border-bottom:1px solid rgba(30,58,95,0.3);">`;
+
+        // Draw vertical grid lines
+        // For daily view, show hour/6h grid lines.
+        // For weekly/2week/3week/monthly, rely on table column borders to avoid misalignment.
+        if (VIEW === 'daily') {
+            for (let i = 1; i < slots.length; i++) {
+                const x = i * CELL_PX;
+                const isHour = i % 6 === 0;
+                html += `<div style="position:absolute; top:0; bottom:0; left:${x}px; width:1px; background:${isHour ? 'rgba(30,58,95,0.8)' : 'rgba(30,58,95,0.3)'}; pointer-events:none;"></div>`;
+            }
+        }
+
+        // Pre-compute geometry once so we can draw links and bars consistently.
+        const computed = [];
+        machineTasks.forEach(task => {
+            const s = new Date(task.start);
+            const e = new Date(task.end);
+            const clampedS = Math.max(s, START_DATE);
+            const clampedE = Math.min(e, END_DATE);
+            if (clampedS >= clampedE) return;
+            const left = ((clampedS - START_DATE) / totalMs) * totalWidth;
+            const width = Math.max(4, ((clampedE - clampedS) / totalMs) * totalWidth);
+            computed.push({ task, s, e, left, width, right: left + width });
+        });
+        computed.sort((a, b) => a.left - b.left);
+
+        // Draw bars
+        computed.forEach(({ task, s, e, left, width }) => {
+            const itemKey = getItemKey(task);
+            const baseColor = itemColorMap[itemKey] || COLORS[0];
+            const sc = getStatusColor(task.status) || baseColor;
+
+            const escapedTask = JSON.stringify(task).replace(/'/g, "\\'");
+            const setupMins = Number(task.setup_minutes || 0);
+            const durMins = Math.max(1, (e - s) / 60000);
+            const setupRatio = setupMins > 0 ? Math.min(1, setupMins / durMins) : 0;
+            const setupPx = setupRatio > 0 ? Math.max(3, Math.floor(width * setupRatio)) : 0;
+            const itemCode = task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
+            const q = task.quantity;
+            const qtyStr = (q === null || q === undefined || q === '') ? '—' : (Number.isFinite(Number(q)) && Number(q) % 1 === 0 ? String(Number(q)) : String(q));
+            const labelHtml = `${escapeHtml(itemCode)}<br>${escapeHtml(qtyStr)}`;
+
+            html += `<div class="gantt-bar"
+                style="left:${left}px; width:${width}px; background:${sc.bg}; border-color:${sc.border};"
+                data-operation-code="${escapeHtml(task.operation_code || task.process_name || '')}"
+                data-next-operation-code="${escapeHtml(task.next_operation_code || '')}"
+                data-operation-id="${escapeHtml(task.operation_id || '')}"
+                data-next-operation-id="${escapeHtml(task.next_operation_id || '')}"
+                data-order-item-code="${escapeHtml(task.order_item_code || '')}"
+                data-item-key="${escapeHtml(itemKey)}"
+                data-task='${escapedTask}'
+                onmouseenter="showTooltip(event, this)"
+                onmouseleave="hideTooltip()"
+            >
+                ${setupPx > 0 ? `<div class="gantt-setup" style="width:${setupPx}px;"></div>` : ''}
+                <span class="gantt-bar-text" style="color:${sc.text};">${labelHtml}</span>
+            </div>`;
+        });
+
+        html += '</td></tr>';
+    });
+
+    html += '</tbody></table></div></div>';
+    container.innerHTML = html;
+
+    drawNextOperationLinks();
+
+    // Now line
+    const now = new Date();
+    if (now >= START_DATE && now <= END_DATE) {
+        const totalWidth = slots.length * CELL_PX;
+        const pct = (now - START_DATE) / (END_DATE - START_DATE);
+        const nowX = LABEL_W + pct * totalWidth;
+        const nowLine = document.createElement('div');
+        nowLine.className = 'now-line';
+        nowLine.style.cssText = `left:${nowX}px; position:absolute; top:0; bottom:0;`;
+        // Add to wrapper
+    }
+}
+
+function drawNextOperationLinks() {
+    const wrap = document.querySelector('.gantt-overlay-wrap');
+    const svg = document.getElementById('gantt-links-overlay');
+    if (!wrap || !svg) return;
+
+    const bars = [...wrap.querySelectorAll('.gantt-bar')];
+    if (!bars.length) return;
+
+    // Size overlay to content box
+    const wrapRect = wrap.getBoundingClientRect();
+    const w = wrap.scrollWidth || wrapRect.width;
+    const h = wrap.scrollHeight || wrapRect.height;
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+
+    // Helper: get family base from WorkUser_OrderItem (before numeric suffix)
+    function getFamily(code) {
+        if (!code) return '';
+        const parts = code.split('-');
+        if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+            return parts.slice(0, -1).join('-');
+        }
+        return code;
+    }
+
+    const selectedFamily = ITEM_FILTER && ITEM_FILTER !== '__ALL__'
+        ? getFamily(ITEM_FILTER)
+        : '';
+
+    // Map operation_code / operation_id -> geometry (filtered by selected family if any)
+    const codeMap = new Map();
+    const idMap = new Map();
+    bars.forEach(el => {
+        const oi = el.dataset.orderItemCode || '';
+        if (selectedFamily && getFamily(oi) !== selectedFamily) return;
+        const opCode = el.dataset.operationCode || '';
+        const opId = el.dataset.operationId || '';
+        if (!opCode && !opId) return;
+        const r = el.getBoundingClientRect();
+        const x1 = r.left - wrapRect.left;
+        const y1 = r.top - wrapRect.top;
+        const geom = {
+            xStart: x1,
+            xEnd: x1 + r.width,
+            yMid: y1 + r.height / 2,
+        };
+        if (opCode) codeMap.set(opCode, geom);
+        if (opId) idMap.set(opId, geom);
+    });
+
+    const stroke = 'rgba(0,0,0,0.28)';
+    const strokeWidth = 1.25;
+    const dash = '4 3';
+    const arrow = 5;
+    const lines = [];
+    // If Not Selected, do not draw any links.
+    if (!ITEM_FILTER) {
+        svg.innerHTML = '';
+        return;
+    }
+
+    bars.forEach(el => {
+        const oi = el.dataset.orderItemCode || '';
+        if (selectedFamily && getFamily(oi) !== selectedFamily) return;
+        const opCode = el.dataset.operationCode || '';
+        const nextCode = el.dataset.nextOperationCode || '';
+        const opId = el.dataset.operationId || '';
+        const nextId = el.dataset.nextOperationId || '';
+
+        // Prefer Work_NextOperationCode -> Work_Code linking
+        let a = null;
+        let b = null;
+        if (opCode && nextCode) {
+            a = codeMap.get(opCode);
+            b = codeMap.get(nextCode);
+        }
+        // Fallback to ID linking
+        if (!a || !b) {
+            if (!opId || !nextId) return;
+            a = idMap.get(opId);
+            b = idMap.get(nextId);
+        }
+        if (!a || !b) return;
+        // Draw a polyline: end -> (end+6) -> (start-6) -> start, with small arrow head.
+        const xA = a.xEnd;
+        const yA = a.yMid;
+        const xB = b.xStart;
+        const yB = b.yMid;
+        const mid1 = xA + 8;
+        const mid2 = xB - 8;
+        const d = `M ${xA} ${yA} L ${mid1} ${yA} L ${mid2} ${yB} L ${xB} ${yB}`;
+        lines.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" />`);
+        // Arrow head at target
+        const ah1 = `${xB} ${yB}`;
+        const ah2 = `${xB - arrow} ${yB - arrow/1.5}`;
+        const ah3 = `${xB - arrow} ${yB + arrow/1.5}`;
+        lines.push(`<polygon points="${ah1} ${ah2} ${ah3}" fill="${stroke}" />`);
+    });
+    svg.innerHTML = lines.join('');
+}
+
+const tooltip = document.getElementById('tooltip');
+
+function showTooltip(e, el) {
+    const task = JSON.parse(el.dataset.task);
+    const s = new Date(task.start);
+    const en = new Date(task.end);
+    const dur = Math.round((en - s) / 60000);
+    const h = Math.floor(dur / 60), m = dur % 60;
+    const durStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    const setupMins = Math.round(Number(task.setup_minutes || 0));
+    const setupStr = setupMins > 0 ? (setupMins >= 60 ? `${Math.floor(setupMins/60)}h ${setupMins%60}m` : `${setupMins}m`) : null;
+
+    tooltip.innerHTML = `
+        <div class="tooltip-title">${task.order_id || 'Operation'}</div>
+        <div class="tooltip-row"><span class="tooltip-label">Machine</span><span class="tooltip-val">${task.machine}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Item</span><span class="tooltip-val">${task.item_name || '—'}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Process</span><span class="tooltip-val">${task.process_name || '—'}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Start</span><span class="tooltip-val">${s.toLocaleString()}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">End</span><span class="tooltip-val">${en.toLocaleString()}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Duration</span><span class="tooltip-val">${durStr}</span></div>
+        ${setupStr ? `<div class="tooltip-row"><span class="tooltip-label">Setup</span><span class="tooltip-val">${setupStr}</span></div>` : ''}
+        ${task.quantity ? `<div class="tooltip-row"><span class="tooltip-label">Qty</span><span class="tooltip-val">${task.quantity}</span></div>` : ''}
+        <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-val">${task.status || '—'}</span></div>
+    `;
+
+    tooltip.style.display = 'block';
+    positionTooltip(e);
+}
+
+function positionTooltip(e) {
+    const pad = 12;
+    let x = e.clientX + pad;
+    let y = e.clientY + pad;
+    const tw = tooltip.offsetWidth || 280;
+    const th = tooltip.offsetHeight || 200;
+    if (x + tw > window.innerWidth - 10) x = e.clientX - tw - pad;
+    if (y + th > window.innerHeight - 10) y = e.clientY - th - pad;
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+}
+
+function hideTooltip() {
+    tooltip.style.display = 'none';
+}
+
+document.addEventListener('mousemove', (e) => {
+    if (tooltip.style.display !== 'none') positionTooltip(e);
+});
+</script>
+{% endblock %}

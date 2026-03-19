@@ -1,0 +1,26 @@
+# 最重要（必須）
+__pycache__/
+*.pyc
+data/uploads/*
+!data/uploads/.gitkeep
+data/*.db
+.env
+.vscode/
+
+# その他（Python / 仮想環境）
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# IDE（.vscode は上で除外済み）
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

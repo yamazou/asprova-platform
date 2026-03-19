@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}ASPROVA{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  {% block extra_styles %}{% endblock %}
+</head>
+
+<body>
+<div class="app-shell">
+  <header class="header">
+    {% if oracle_connected is defined %}
+      <a href="{{ url_for('index') }}" class="logo">
+        <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="ASPROVA">
+        <span>ASPROVA BRIDGE for mcframe</span>
+      </a>
+      <nav class="nav">
+        <button type="button" class="nav-btn" onclick="openConnect()">Connect</button>
+      </nav>
+      <div class="header-status">
+        <div class="status-dot" style="background: {{ 'var(--success)' if oracle_connected else 'var(--danger)' }};"></div>
+        <span id="current-time"></span>
+        <span style="margin-left:12px;">
+          Status:
+          <span id="conn-status">{{ 'CONNECTED' if oracle_connected else 'DISCONNECTED' }}</span>
+        </span>
+      </div>
+    {% else %}
+      <a href="/" class="logo">
+        <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="ASPROVA">
+        <span>ASPROVA SCHEDULE VIEWER</span>
+      </a>
+      <nav class="nav">
+        {# Gantt Chart #}
+        {% if request.endpoint == 'gantt' and current_date is defined and view is defined %}
+          <a href="{{ url_for('gantt', date=current_date.strftime('%Y-%m-%d'), view=view, machine=machine_filter|default('')) }}" class="active">
+            Gantt Chart
+          </a>
+        {% else %}
+          <a href="{{ url_for('gantt') }}" class="{% if request.endpoint == 'gantt' %}active{% endif %}">
+            Gantt Chart
+          </a>
+        {% endif %}
+
+        {# PSI Viewer #}
+        <a href="{{ url_for('psi_view') }}" class="{% if request.endpoint == 'psi_view' %}active{% endif %}">
+          PSI Viewer
+        </a>
+
+        {# Import CSV #}
+        <a href="{{ url_for('upload') }}" class="{% if request.endpoint == 'upload' %}active{% endif %}">
+          Import CSV
+        </a>
+      </nav>
+
+      {% if schedule_total is defined and schedule_total > 0 %}
+        <form method="POST" action="/clear" onsubmit="return confirm('Clear all schedule data?')" style="margin:0;">
+          <button type="submit" class="btn btn-danger btn-sm">🗑 Clear all data</button>
+        </form>
+      {% endif %}
+
+      <div class="header-status">
+        <div class="status-dot"></div>
+        <span id="current-time"></span>
+      </div>
+    {% endif %}
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-container">
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    {% if oracle_connected is defined %}
+      <span class="footer-text">ASPROVA BRIDGE for mcframe v1.0 powered by PT.BAHTERA HISISTEM INDONESIA</span>
+    {% else %}
+      <span class="footer-text">ASPROVA SCHEDULE VIEWER v1.0 powered by PT.BAHTERA HISISTEM INDONESIA</span>
+    {% endif %}
+  </footer>
+</div>
+
+<script>
+  function updateTime() {
+    const now = new Date();
+    const el = document.getElementById('current-time');
+    if (!el) return;
+    el.textContent = now.toLocaleString('en-GB', {hour12: false}).replace(',', '');
+  }
+  updateTime();
+  setInterval(updateTime, 1000);
+
+  // Used only on bridge pages (header "Connect" button).
+  function openConnect() {
+    if (typeof window.__openConnect === 'function') window.__openConnect();
+  }
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
+

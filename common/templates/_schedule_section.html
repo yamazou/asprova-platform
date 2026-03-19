@@ -1,0 +1,138 @@
+{# Schedule section: stats, controls, machine table. Include from schedule2.html and upload2.html. #}
+<!-- Stats row -->
+<div style="display:grid; grid-template-columns: repeat(4,1fr); gap:16px; margin-bottom:24px;">
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Total Records</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:32px; font-weight:600; color:var(--accent);">{{ total }}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Machines</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:32px; font-weight:600; color:var(--accent2);">{{ machines|length }}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">CSV Imports</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:32px; font-weight:600; color:var(--accent3);">{{ uploads|length }}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Status</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:18px; font-weight:600; color:{% if total > 0 %}var(--success){% else %}var(--text-dim){% endif %}; margin-top:8px;">
+                {% if total > 0 %}● ACTIVE{% else %}○ NO DATA{% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="controls">
+    <div class="view-toggle">
+        <a href="?view=daily&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'daily' %}active{% endif %}">Daily</a>
+        <a href="?view=weekly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'weekly' %}active{% endif %}">Weekly</a>
+        <a href="?view=2week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '2week' %}active{% endif %}">2 Week</a>
+        <a href="?view=3week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '3week' %}active{% endif %}">3 Week</a>
+        <a href="?view=monthly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'monthly' %}active{% endif %}">Monthly</a>
+    </div>
+    <div class="nav-arrows">
+        <a href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
+        <span class="date-label">
+            {% if view != 'daily' %}
+                {{ start_date.strftime('%b %d') }} – {{ (end_date - (end_date - start_date)).strftime('%b %d') if view in ['weekly','2week','3week'] else end_date.strftime('%b %d') }}
+            {% else %}
+                {{ current_date.strftime('%Y-%m-%d') }}
+            {% endif %}
+        </span>
+        <a href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
+    </div>
+    <a href="?view={{ view }}&date=&machine={{ machine_filter }}" class="btn btn-primary btn-sm">Today</a>
+    <form method="GET" style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+        <input type="hidden" name="view" value="{{ view }}">
+        <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
+        <select name="machine" onchange="this.form.submit()">
+            <option value="">All Machines</option>
+            {% for m in machines %}
+            <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+{% if machine_schedules %}
+    {% for machine, records in machine_schedules.items() %}
+    <div class="machine-section">
+        <div class="machine-header">
+            <span class="machine-name">◈ {{ machine }}</span>
+            <span class="machine-count">{{ records|length }} operation{{ 's' if records|length != 1 }}</span>
+        </div>
+        <div class="machine-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Order ID</th>
+                        <th>Item / Product</th>
+                        <th>Process</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th>Duration</th>
+                        <th>Qty</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in records %}
+                    <tr>
+                        <td class="mono" style="color:var(--accent); font-size:11px;">{{ r.order_id or '—' }}</td>
+                        <td style="color:var(--text-bright);">
+                            {{ r.item_name or r.item_id or '—' }}
+                            {% if r.item_id and r.item_name %}
+                            <div class="mono" style="font-size:10px; color:var(--text-dim);">{{ r.item_id }}</div>
+                            {% endif %}
+                        </td>
+                        <td style="color:var(--text-dim); font-size:12px;">{{ r.process_name or '—' }}</td>
+                        <td class="mono" style="font-size:11px; white-space:nowrap;">
+                            {% if r.start_time %}{{ r.start_time[:16] }}{% else %}—{% endif %}
+                        </td>
+                        <td class="mono" style="font-size:11px; white-space:nowrap; color:var(--text-dim);">
+                            {% if r.end_time %}{{ r.end_time[:16] }}{% else %}—{% endif %}
+                        </td>
+                        <td class="mono" style="font-size:11px; color:var(--text-dim);">
+                            {% if r.start_time and r.end_time %}
+                                <span class="duration-cell" data-start="{{ r.start_time }}" data-end="{{ r.end_time }}">—</span>
+                            {% else %}—{% endif %}
+                        </td>
+                        <td class="mono" style="font-size:11px; color:var(--accent2);">
+                            {% if r.quantity %}{{ r.quantity|int if r.quantity == r.quantity|int else r.quantity }}{% else %}—{% endif %}
+                        </td>
+                        <td>
+                            {% set s = (r.status or 'scheduled').lower() %}
+                            {% if 'progress' in s or 'running' in s %}
+                                <span class="badge badge-progress">IN PROGRESS</span>
+                            {% elif 'complete' in s or 'done' in s or 'finish' in s %}
+                                <span class="badge badge-completed">COMPLETED</span>
+                            {% elif 'schedule' in s or 'plan' in s %}
+                                <span class="badge badge-scheduled">SCHEDULED</span>
+                            {% else %}
+                                <span class="badge badge-default">{{ (r.status or 'UNKNOWN')|upper }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+{% else %}
+<div style="text-align:center; padding:80px 40px;">
+    <div style="font-size:48px; opacity:0.2; margin-bottom:16px;">📅</div>
+    <div style="color:var(--text-dim); font-size:16px; margin-bottom:8px;">No schedule records for this period</div>
+    <div style="color:var(--text-dim); font-size:13px; margin-bottom:24px;">
+        Try navigating to a different date or importing schedule data
+    </div>
+    <a href="{{ url_for('upload') }}" class="btn btn-primary">Import CSV</a>
+</div>
+{% endif %}

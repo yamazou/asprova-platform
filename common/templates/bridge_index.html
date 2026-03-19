@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block title %}ASPROVA BRIDGE for mcframe{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">MASTER</div>
+  </div>
+  <div class="card-body">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('integrated')">
+        Integrated Master
+      </button>
+
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('item')">
+        Item Table
+      </button>
+
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('resource')">
+        Resource Table
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px;">
+  <div class="card-header">
+    <div class="card-title">TRANSACTION</div>
+  </div>
+  <div class="card-body">
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('order')">
+        Order
+      </button>
+
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('inventory')">
+        Inventory
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="confirmBackdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal">
+    <h2 class="confirm-title">
+      <img src="{{ url_for('confirm_logo') }}" alt="mcframe" class="confirm-logo" />
+      <span>Confirm</span>
+    </h2>
+    <div class="hint" id="confirmMessage" style="margin-top:0;"></div>
+
+    <div class="hint" style="margin-top:12px;">Save to (optional):</div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+      <button type="button" class="btn btn-ghost" onclick="chooseFolder()">Choose folder</button>
+      <span class="mono" id="saveFolderLabel" style="font-size:11px; color: var(--text-dim);">Browser default</span>
+    </div>
+    <div class="field" style="margin-top:10px;">
+      <label for="saveFileName">File name</label>
+      <input id="saveFileName" type="text" value="download.csv" />
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" onclick="closeConfirm()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="doConfirm()">OK</button>
+    </div>
+  </div>
+</div>
+
+<form id="downloadForm" method="post" style="display:none;"></form>
+
+<div id="connectBackdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal">
+    <h2 class="confirm-title">
+      <img src="{{ url_for('confirm_logo') }}" alt="mcframe" class="confirm-logo" />
+      <span>Oracle Connect</span>
+    </h2>
+    <form method="post" action="{{ url_for('connect_oracle') }}">
+      <div class="field">
+        <label for="oracle_id">ID</label>
+        <input id="oracle_id" name="oracle_id" type="text" required />
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_pwd">Password</label>
+        <input id="oracle_pwd" name="oracle_pwd" type="password" required />
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_schema">Schema</label>
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" required />
+      </div>
+      <div class="hint">DSN is fixed to <code>orcl</code>.</div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeConnect()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Connect mcframe</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const connectBackdrop = document.getElementById('connectBackdrop');
+  const confirmBackdrop = document.getElementById('confirmBackdrop');
+  const confirmMessage = document.getElementById('confirmMessage');
+  const downloadForm = document.getElementById('downloadForm');
+  const saveFolderLabel = document.getElementById('saveFolderLabel');
+  const saveFileName = document.getElementById('saveFileName');
+
+  let confirmTarget = null;
+  let directoryHandle = null;
+
+  window.__openConnect = function () {
+    connectBackdrop.classList.add('show');
+    connectBackdrop.setAttribute('aria-hidden', 'false');
+    const idEl = document.getElementById('oracle_id');
+    if (idEl) idEl.focus();
+  };
+
+  function closeConnect() {
+    connectBackdrop.classList.remove('show');
+    connectBackdrop.setAttribute('aria-hidden', 'true');
+  }
+
+  connectBackdrop.addEventListener('click', (e) => {
+    if (e.target === connectBackdrop) closeConnect();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeConnect();
+      closeConfirm();
+    }
+  });
+
+  function confirmDownload(target) {
+    confirmTarget = target;
+    if (target === 'integrated') {
+      confirmMessage.textContent = 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.';
+      downloadForm.action = "{{ url_for('download_integrated') }}";
+      saveFileName.value = 'integrated_master.csv';
+    } else if (target === 'item') {
+      confirmMessage.textContent = 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALLL.';
+      downloadForm.action = "{{ url_for('download_item_table') }}";
+      saveFileName.value = 'item_table.csv';
+    } else if (target === 'order') {
+      confirmMessage.textContent = 'Data is retrieved from ST_SHOYO_ALL.';
+      downloadForm.action = "{{ url_for('download_order_table') }}";
+      saveFileName.value = 'order_table.csv';
+    } else if (target === 'inventory') {
+      confirmMessage.textContent = 'Data is retrieved from ST_GNZAIKO_ALL.';
+      downloadForm.action = "{{ url_for('download_inventory_table') }}";
+      saveFileName.value = 'inventory_table.csv';
+    } else if (target === 'resource') {
+      confirmMessage.textContent = 'Data is retrieved from SM_LINE_ALL.';
+      downloadForm.action = "{{ url_for('download_resource_table') }}";
+      saveFileName.value = 'resource_table.csv';
+    } else {
+      return;
+    }
+    confirmBackdrop.classList.add('show');
+    confirmBackdrop.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeConfirm() {
+    confirmBackdrop.classList.remove('show');
+    confirmBackdrop.setAttribute('aria-hidden', 'true');
+    confirmTarget = null;
+  }
+
+  async function chooseFolder() {
+    if (!window.showDirectoryPicker) {
+      saveFolderLabel.textContent = 'Not supported in this browser';
+      return;
+    }
+    directoryHandle = await window.showDirectoryPicker();
+    saveFolderLabel.textContent = 'Selected';
+  }
+
+  async function downloadToChosenFolder() {
+    const fileName = (saveFileName.value || '').trim() || 'download.csv';
+    const resp = await fetch(downloadForm.action, { method: 'POST', credentials: 'same-origin' });
+    if (!resp.ok) throw new Error('Download failed');
+    const blob = await resp.blob();
+
+    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  function doConfirm() {
+    if (!confirmTarget) return;
+    if (directoryHandle && window.showDirectoryPicker) {
+      downloadToChosenFolder()
+        .catch(() => downloadForm.submit())
+        .finally(() => closeConfirm());
+    } else {
+      downloadForm.submit();
+      closeConfirm();
+    }
+  }
+
+  confirmBackdrop.addEventListener('click', (e) => {
+    if (e.target === confirmBackdrop) closeConfirm();
+  });
+</script>
+{% endblock %}
+

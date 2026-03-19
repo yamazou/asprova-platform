@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Schedule — Asprova Schedule Viewer{% endblock %}
+
+{% block extra_styles %}
+<style>
+.machine-section {
+    margin-bottom: 20px;
+}
+
+.machine-header {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.machine-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: #000000;
+}
+
+.machine-count {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.machine-body {
+    border: 1px solid var(--border);
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="page-title">Production Schedule</div>
+        <div class="page-subtitle">
+            {% if view == 'weekly' %}
+                Week of {{ start_date.strftime('%b %d') }} – {{ end_date.strftime('%b %d, %Y') }}
+            {% else %}
+                {{ current_date.strftime('%A, %B %d, %Y') }}
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% include '_schedule_section.html' %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Calculate durations
+document.querySelectorAll('.duration-cell').forEach(cell => {
+    const start = new Date(cell.dataset.start);
+    const end = new Date(cell.dataset.end);
+    if (!isNaN(start) && !isNaN(end)) {
+        const mins = Math.round((end - start) / 60000);
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        cell.textContent = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}PSI Viewer — Asprova Schedule Viewer{% endblock %}
+
+{% block extra_styles %}
+<style>
+.psi-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 12px;
+}
+.psi-table th,
+.psi-table td {
+    border: 1px solid #d6dee9;
+    padding: 6px 8px;
+    vertical-align: top;
+}
+.psi-header {
+    background: #bce597; /* RGB(188,229,151) */
+    font-weight: 600;
+    text-align: center;
+    width: 90px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+.psi-item {
+    width: 220px;
+}
+.psi-type {
+    width: 70px;
+}
+.psi-row-even {
+    background: #ffffff;
+}
+.psi-row-odd {
+    background: #ddf2ca; /* RGB(221,242,202) */
+}
+.psi-cell {
+    white-space: pre-line;
+    text-align: left;
+    width: 90px;
+}
+
+.psi-scroll {
+    max-height: 70vh;
+    overflow: auto;
+}
+
+/* Export confirm popup */
+#psi-export-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+#psi-export-overlay.show { display: flex; }
+#psi-export-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 28px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    min-width: 320px;
+    max-width: 520px;
+}
+.psi-export-title {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 10px;
+}
+.psi-export-desc {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.6;
+    margin-bottom: 16px;
+}
+.psi-export-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <div class="page-title">PSI Viewer</div>
+        <div class="page-subtitle">
+            Monthly PSI for {{ month_label }}
+        </div>
+    </div>
+    <a href="{{ url_for('export_psi', date=psi_date) }}" class="btn btn-primary" id="psi-export-link">Export Excel</a>
+</div>
+
+<div id="psi-export-overlay" aria-hidden="true">
+    <div id="psi-export-box">
+        <div class="psi-export-title">Export Excel</div>
+        <div class="psi-export-desc">
+            PSI表をExcelで出力します。OKで実行します。<br>
+            （保存先の選択はブラウザのダウンロード設定に従います）
+        </div>
+        <div class="psi-export-actions">
+            <button type="button" class="btn" id="psi-export-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary" id="psi-export-ok">OK</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body" style="padding:0;">
+        <div class="psi-scroll">
+        <table class="psi-table">
+            <thead>
+                <tr>
+                    <th class="psi-header psi-item">Item</th>
+                    <th class="psi-header psi-type">Type</th>
+                    {% for d in day_labels %}
+                    <th class="psi-header">{{ d }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in psi_items %}
+                    {% set group_index = loop.index0 %}
+                    {% set row_class = 'psi-row-even' if group_index % 2 == 0 else 'psi-row-odd' %}
+                    {% for row in item.rows %}
+                    <tr class="{{ row_class }}">
+                        {% if loop.first %}
+                        <td class="psi-item" rowspan="3">{{ item.item }}</td>
+                        {% endif %}
+                        <td class="psi-type">{{ row.type }}</td>
+                        {% for cell in row.cells %}
+                        <td class="psi-cell">{{ cell }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    var link = document.getElementById('psi-export-link');
+    var overlay = document.getElementById('psi-export-overlay');
+    var okBtn = document.getElementById('psi-export-ok');
+    var cancelBtn = document.getElementById('psi-export-cancel');
+    if (!link || !overlay || !okBtn || !cancelBtn) return;
+
+    var href = link.getAttribute('href');
+    function openPopup() {
+        overlay.classList.add('show');
+        overlay.setAttribute('aria-hidden', 'false');
+    }
+    function closePopup() {
+        overlay.classList.remove('show');
+        overlay.setAttribute('aria-hidden', 'true');
+    }
+
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+        openPopup();
+    });
+    okBtn.addEventListener('click', function() {
+        closePopup();
+        window.location.href = href;
+    });
+    cancelBtn.addEventListener('click', function() {
+        closePopup();
+    });
+    overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) closePopup();
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closePopup();
+    });
+})();
+</script>
+{% endblock %}
+
