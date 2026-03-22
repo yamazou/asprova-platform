@@ -12,8 +12,6 @@ BRIDGE_DIR = ROOT_DIR / "apps" / "bridge"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from apps.viewer.app import app  # noqa: E402
-from apps.viewer.app import ensure_db_schema, init_db  # noqa: E402
 from config.settings import DATA_DIR, UPLOAD_FOLDER  # noqa: E402
 
 
@@ -46,6 +44,9 @@ def _wait_for_all(processes: list[subprocess.Popen]) -> int:
 
 def _run_viewer(host: str = "0.0.0.0", port: int = 5000, debug: bool = True) -> None:
     """同一プロセスで viewer を起動（DB・upload ディレクトリを用意）。"""
+    from apps.viewer.app import app  # noqa: E402
+    from apps.viewer.app import ensure_db_schema, init_db  # noqa: E402
+
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     init_db()

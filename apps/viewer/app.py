@@ -142,8 +142,8 @@ def get_earliest_schedule_date():
 
 @app.route('/')
 def index():
-    # Landing page should go to Schedule view instead of legacy dashboard
-    return redirect(url_for('schedule'))
+    # Default landing page is the gantt view.
+    return redirect(url_for('gantt'))
 
 
 @app.route('/upload', methods=['GET', 'POST'])
