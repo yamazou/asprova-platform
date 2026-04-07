@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 def parse_duration_minutes(raw: Any) -> Optional[float]:
@@ -194,10 +194,11 @@ def detect_columns(headers: list[str]) -> Dict[str, str]:
         "count",
     )
     mapping["status"] = find_col("work_status", "status", "state", "condition")
+    # work_type before work_code so exports with both Work_Code + Work_Type round-trip correctly.
     mapping["process_name"] = find_col(
-        "work_code",
         "work_type",
         "work_operationoutmainitemcode",
+        "work_code",
         "process",
         "operation",
         "activity",
@@ -218,6 +219,55 @@ def detect_columns(headers: list[str]) -> Dict[str, str]:
         "work_setuptime",
     )
     mapping["setup_start_time"] = find_col("work_operationsetupstarttime", "setupstarttime")
+
+    # Actuals (optional CSV columns)
+    mapping["actual_start"] = find_exact("actual_start") or find_col(
+        "actual_start",
+        "work_actualstarttime",
+        "actualstarttime",
+        "result_actualstart",
+        "actual_start_time",
+    )
+    mapping["actual_end"] = find_exact("actual_end") or find_col(
+        "actual_end",
+        "work_actualendtime",
+        "actualendtime",
+        "result_actualend",
+        "actual_end_time",
+    )
+    mapping["actual_resource"] = find_exact("actual_resource") or find_col(
+        "actual_resource",
+        "work_actualmainrescode",
+        "actualmainrescode",
+        "result_actualres",
+        "actual_res",
+    )
+
+    # Resource / skill grouping (optional CSV columns)
+    # WorkUser_Group (Asprova export) before plain "Group" so both can coexist in one CSV.
+    mapping["work_group"] = (
+        find_exact("workuser_group")
+        or find_col("workuser_group", "workuser.group", "workuser group")
+        or find_exact("group")
+        or find_col(
+            "work_group",
+            "resource_group",
+            "op_group",
+            "グループ",
+        )
+    )
+    mapping["min_skill"] = find_exact("min skill") or find_col(
+        "min_skill",
+        "minskill",
+        "minimum skill",
+        "最低スキル",
+    )
+    mapping["qc_skill"] = find_exact("qc skill") or find_col(
+        "qc_skill",
+        "qcskill",
+        "q_c skill",
+        "qc スキル",
+    )
 
     return mapping
 
@@ -267,6 +317,16 @@ def parse_schedule_upload_row(
         if setup_dt and start_dt and setup_dt < start_dt:
             setup_minutes = (start_dt - setup_dt).total_seconds() / 60.0
 
+    actual_start_raw = _get_val(mapping, row, "actual_start")
+    actual_end_raw = _get_val(mapping, row, "actual_end")
+    actual_start_dt = parse_datetime(actual_start_raw)
+    actual_end_dt = parse_datetime(actual_end_raw)
+    actual_resource = _get_val(mapping, row, "actual_resource")
+
+    wg = _get_val(mapping, row, "work_group")
+    ms = _get_val(mapping, row, "min_skill")
+    qs = _get_val(mapping, row, "qc_skill")
+
     return {
         "order_id": _get_val(mapping, row, "order_id"),
         "order_item_code": _get_val(mapping, row, "order_item_code"),
@@ -285,5 +345,77 @@ def parse_schedule_upload_row(
         "status": _get_val(mapping, row, "status") or "Scheduled",
         "process_name": _get_val(mapping, row, "process_name"),
         "setup_minutes": setup_minutes,
+        "actual_start": (
+            actual_start_dt.strftime("%Y-%m-%d %H:%M:%S") if actual_start_dt else None
+        ),
+        "actual_end": (
+            actual_end_dt.strftime("%Y-%m-%d %H:%M:%S") if actual_end_dt else None
+        ),
+        "actual_resource": actual_resource or None,
+        "work_group": wg or None,
+        "min_skill": ms or None,
+        "qc_skill": qs or None,
     }
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def _format_csv_cell(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        if math.isnan(v):
+            return ""
+        if math.isfinite(v) and abs(v - round(v)) < 1e-9:
+            return str(int(round(v)))
+        return str(v)
+    return str(v).strip()
+
+
+# Result export: Work_Code + actual columns only.
+RESULT_CSV_HEADERS: Tuple[str, ...] = (
+    "Work_Code",
+    "Actual_Start",
+    "Actual_End",
+    "Actual_Resource",
+    "actual_quantity",
+)
+
+
+def result_csv_export_headers() -> List[str]:
+    return list(RESULT_CSV_HEADERS)
+
+
+def _format_result_export_datetime(v: Any) -> str:
+    """Result CSV: Actual_Start / Actual_End as YYYY/MM/DD HH:MM:SS (e.g. 2026/03/05 03:12:00)."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    dt = parse_datetime(s)
+    if not dt:
+        return s
+    return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def schedule_row_to_result_csv_cells(row: Any) -> List[str]:
+    oc = _row_get(row, "operation_code")
+    pn = _row_get(row, "process_name")
+    if oc is not None and str(oc).strip() != "":
+        wc = oc
+    else:
+        wc = pn
+    return [
+        _format_csv_cell(wc),
+        _format_result_export_datetime(_row_get(row, "actual_start")),
+        _format_result_export_datetime(_row_get(row, "actual_end")),
+        _format_csv_cell(_row_get(row, "actual_resource")),
+        _format_csv_cell(_row_get(row, "actual_quantity")),
+    ]
 

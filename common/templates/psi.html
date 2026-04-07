@@ -46,6 +46,20 @@
     max-height: 70vh;
     overflow: auto;
 }
+.psi-scroll--zoom .psi-zoom-spacer {
+    display: none;
+}
+.psi-scroll--zoom .psi-zoom-inner {
+    position: relative;
+    transform: none !important;
+}
+
+.psi-page-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
 
 /* Export confirm popup */
 #psi-export-overlay {
@@ -96,15 +110,24 @@
             Monthly PSI for {{ month_label }}
         </div>
     </div>
-    <a href="{{ url_for('export_psi', date=psi_date) }}" class="btn btn-primary" id="psi-export-link">Export Excel</a>
+    <div class="psi-page-actions">
+        <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
+            <span class="view-zoom-bar__label">Zoom</span>
+            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-out" title="Zoom out">−</button>
+            <span class="view-zoom-bar__pct" id="psi-zoom-pct">100%</span>
+            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-in" title="Zoom in">+</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-reset" title="Reset zoom">100%</button>
+        </div>
+        <a href="{{ url_for('export_psi', date=psi_date) }}" class="btn btn-primary" id="psi-export-link">Export Excel</a>
+    </div>
 </div>
 
 <div id="psi-export-overlay" aria-hidden="true">
     <div id="psi-export-box">
         <div class="psi-export-title">Export Excel</div>
         <div class="psi-export-desc">
-            PSI表をExcelで出力します。OKで実行します。<br>
-            （保存先の選択はブラウザのダウンロード設定に従います）
+            Export the PSI table to an Excel file. Click OK to proceed.<br>
+            (The save location follows your browser download settings.)
         </div>
         <div class="psi-export-actions">
             <button type="button" class="btn" id="psi-export-cancel">Cancel</button>
@@ -115,7 +138,9 @@
 
 <div class="card">
     <div class="card-body" style="padding:0;">
-        <div class="psi-scroll">
+        <div class="psi-scroll psi-scroll--zoom" id="psi-scroll-root">
+        <div class="psi-zoom-spacer" id="psi-zoom-spacer" aria-hidden="true"></div>
+        <div class="psi-zoom-inner" id="psi-zoom-inner">
         <table class="psi-table">
             <thead>
                 <tr>
@@ -145,6 +170,7 @@
             </tbody>
         </table>
         </div>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -152,6 +178,48 @@
 {% block scripts %}
 <script>
 (function() {
+    var VIEW_ZOOM_KEY = 'asprovaViewZoom';
+    var LEGACY_GANTT_ZOOM_KEY = 'asprovaGanttZoom';
+    var LEGACY_PSI_ZOOM_KEY = 'asprovaPsiZoom';
+    var VIEW_ZOOM_MIN = 0.5;
+    var VIEW_ZOOM_MAX = 5;
+    function getViewZoom() {
+        var v = parseFloat(sessionStorage.getItem(VIEW_ZOOM_KEY), 10);
+        if (isFinite(v)) return Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, v));
+        var g = parseFloat(sessionStorage.getItem(LEGACY_GANTT_ZOOM_KEY), 10);
+        var p = parseFloat(sessionStorage.getItem(LEGACY_PSI_ZOOM_KEY), 10);
+        var legacy = isFinite(g) ? g : (isFinite(p) ? p : NaN);
+        v = isFinite(legacy) ? legacy : 1;
+        v = Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, v));
+        sessionStorage.setItem(VIEW_ZOOM_KEY, String(v));
+        return v;
+    }
+    function setViewZoomStored(next) {
+        var z = Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, next));
+        sessionStorage.setItem(VIEW_ZOOM_KEY, String(z));
+        return z;
+    }
+    function getPsiZoom() {
+        return getViewZoom();
+    }
+    function applyPsiZoom(z) {
+        var inner = document.getElementById('psi-zoom-inner');
+        var spacer = document.getElementById('psi-zoom-spacer');
+        var table = inner && inner.querySelector('.psi-table');
+        if (!inner || !spacer || !table) return;
+        // Use CSS zoom (Chromium) to keep sticky header behavior stable.
+        table.style.zoom = String(z);
+        spacer.style.width = '0px';
+        spacer.style.height = '0px';
+    }
+    function setPsiZoom(next) {
+        var z = setViewZoomStored(next);
+        var pct = document.getElementById('psi-zoom-pct');
+        if (pct) pct.textContent = Math.round(z * 100) + '%';
+        applyPsiZoom(z);
+        // no-op: sticky header handled by native CSS behavior
+    }
+
     var link = document.getElementById('psi-export-link');
     var overlay = document.getElementById('psi-export-overlay');
     var okBtn = document.getElementById('psi-export-ok');
@@ -184,6 +252,16 @@
     });
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') closePopup();
+    });
+
+    var pct0 = document.getElementById('psi-zoom-pct');
+    if (pct0) pct0.textContent = Math.round(getPsiZoom() * 100) + '%';
+    applyPsiZoom(getPsiZoom());
+    document.getElementById('psi-zoom-in')?.addEventListener('click', function() { setPsiZoom(getPsiZoom() + 0.1); });
+    document.getElementById('psi-zoom-out')?.addEventListener('click', function() { setPsiZoom(getPsiZoom() - 0.1); });
+    document.getElementById('psi-zoom-reset')?.addEventListener('click', function() { setPsiZoom(1); });
+    window.addEventListener('resize', function() {
+        applyPsiZoom(getPsiZoom());
     });
 })();
 </script>

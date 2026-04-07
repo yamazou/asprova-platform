@@ -75,9 +75,19 @@ body::before {
 }
 
 .logo img {
-  height: 26px;
+  height: 36px;
   width: auto;
   display: block;
+  object-fit: contain;
+}
+
+.logo-subtitle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .nav {
@@ -522,5 +532,54 @@ code {
   padding: 1px 6px;
   border-radius: 4px;
   color: var(--text-bright);
+}
+
+/* Gantt / PSI zoom controls */
+.view-zoom-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.view-zoom-bar--inline {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
+}
+
+.view-zoom-bar__label {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  margin-right: 2px;
+}
+
+.view-zoom-bar__pct {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  min-width: 2.75em;
+  text-align: center;
+  color: var(--text-bright);
+}
+
+.psi-scroll--zoom {
+  position: relative;
+}
+
+.psi-zoom-spacer {
+  visibility: hidden;
+  pointer-events: none;
+  display: block;
+}
+
+.psi-zoom-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
 }
 

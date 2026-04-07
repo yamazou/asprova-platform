@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}ASPROVA BRIDGE for mcframe{% endblock %}
+{% block title %}Asprova Data Bridge{% endblock %}
 
 {% block content %}
 <div class="card">
@@ -72,25 +72,28 @@
   <div class="modal">
     <h2 class="confirm-title">
       <img src="{{ url_for('confirm_logo') }}" alt="mcframe" class="confirm-logo" />
-      <span>Oracle Connect</span>
+      <span>Database Connect</span>
     </h2>
     <form method="post" action="{{ url_for('connect_oracle') }}">
       <div class="field">
         <label for="oracle_id">ID</label>
-        <input id="oracle_id" name="oracle_id" type="text" required />
+        <input id="oracle_id" name="oracle_id" type="text" value="{{ session.get('oracle_user', '') }}" required />
       </div>
       <div class="field" style="margin-top:10px;">
-        <label for="oracle_pwd">Password</label>
-        <input id="oracle_pwd" name="oracle_pwd" type="password" required />
+        <label for="oracle_pwd">PASSWORD</label>
+        <input id="oracle_pwd" name="oracle_pwd" type="password" value="{{ session.get('oracle_password', '') }}" required />
       </div>
       <div class="field" style="margin-top:10px;">
-        <label for="oracle_schema">Schema</label>
-        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" required />
+        <label for="oracle_schema">SCHEMA(DB Name)</label>
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" value="{{ session.get('oracle_schema', '') }}" required />
       </div>
-      <div class="hint">DSN is fixed to <code>orcl</code>.</div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_dsn">DNS(Server Name)</label>
+        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="例: orcl" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" onclick="closeConnect()">Cancel</button>
-        <button type="submit" class="btn btn-primary">Connect mcframe</button>
+        <button type="submit" class="btn btn-primary">Connect</button>
       </div>
     </form>
   </div>

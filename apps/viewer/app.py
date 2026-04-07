@@ -8,6 +8,7 @@ import calendar
 from collections import defaultdict
 import sys
 from pathlib import Path
+from typing import Optional
 from jinja2 import ChoiceLoader, FileSystemLoader
 
 try:
@@ -22,7 +23,12 @@ COMMON_DIR = PLATFORM_ROOT / "common"
 
 sys.path.insert(0, str(PLATFORM_ROOT))
 from config.settings import DATA_DIR, DB_PATH, UPLOAD_FOLDER
-from core.asprova_parser import detect_columns, parse_schedule_upload_row
+from core.asprova_parser import (
+    detect_columns,
+    parse_schedule_upload_row,
+    result_csv_export_headers,
+    schedule_row_to_result_csv_cells,
+)
 from core.csv_loader import csv_dict_reader_from_bytes
 
 app = Flask(__name__, static_folder=str(COMMON_DIR / "static"))
@@ -35,6 +41,29 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 ALLOWED_EXTENSIONS = {'csv'}
 
 
+GANTT_PAGE_HEADERS = {
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+    'X-Asprova-Gantt-Revision': '5',
+    # 一部環境で X-* のみ除去される場合の予備（レスポンスヘッダ一覧に出るか確認用）
+    'Asprova-Gantt-Revision': '5',
+}
+
+
+def _apply_gantt_cache_headers(response):
+    for k, v in GANTT_PAGE_HEADERS.items():
+        response.headers[k] = v
+    return response
+
+
+@app.after_request
+def _no_store_gantt(response):
+    path = (request.path or '').rstrip('/') or '/'
+    if path == '/gantt' or request.endpoint == 'gantt':
+        _apply_gantt_cache_headers(response)
+    return response
+
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -43,6 +72,90 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _sqlite_row_as_dict(row: sqlite3.Row) -> dict:
+    """Normalize sqlite3.Row to a dict (reliable access to optional columns like actual_quantity)."""
+    return {k: row[k] for k in row.keys()}
+
+
+def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
+    """
+    One schedule row → gantt task dict.
+    plan_* = DB plan (start_time, end_time, machine_name).
+    start/end/machine = display (actual_start/end/resource when both actual times are set, else plan).
+    """
+    rd = _sqlite_row_as_dict(r)
+    try:
+        plan_s = datetime.strptime(r['start_time'], '%Y-%m-%d %H:%M:%S')
+        plan_e = (
+            datetime.strptime(r['end_time'], '%Y-%m-%d %H:%M:%S')
+            if r['end_time']
+            else plan_s + timedelta(hours=1)
+        )
+    except Exception:
+        return None
+    plan_machine = (
+        (r['machine_name'] or '').strip()
+        or (r['machine_id'] or '').strip()
+        or 'Unknown'
+    )
+
+    act_s_raw = rd.get('actual_start')
+    act_e_raw = rd.get('actual_end')
+    act_res = rd.get('actual_resource')
+    disp_s, disp_e = plan_s, plan_e
+    disp_m = plan_machine
+    if act_s_raw and act_e_raw:
+        try:
+            ast = datetime.strptime(str(act_s_raw).strip(), '%Y-%m-%d %H:%M:%S')
+            aen = datetime.strptime(str(act_e_raw).strip(), '%Y-%m-%d %H:%M:%S')
+            disp_s, disp_e = ast, aen
+            if act_res is not None and str(act_res).strip() != '':
+                disp_m = str(act_res).strip()
+        except (TypeError, ValueError):
+            disp_s, disp_e = plan_s, plan_e
+            disp_m = plan_machine
+
+    return {
+        'id': r['id'],
+        'machine': disp_m,
+        'plan_machine': plan_machine,
+        'order_id': r['order_id'] or '',
+        'order_item_code': r['order_item_code'] or '',
+        'operation_id': r['operation_id'] or '',
+        'next_operation_id': r['next_operation_id'] or '',
+        'operation_code': r['operation_code'] or '',
+        'next_operation_code': r['next_operation_code'] or '',
+        'operation_out_item': r['operation_out_item'] or '',
+        'item_id': r['item_id'] or '',
+        'item_name': r['item_name'] or r['item_id'] or '',
+        'process_name': r['process_name'] or '',
+        'start': disp_s.isoformat(),
+        'end': disp_e.isoformat(),
+        'plan_start': plan_s.isoformat(),
+        'plan_end': plan_e.isoformat(),
+        'status': r['status'] or 'Scheduled',
+        'quantity': r['quantity'],
+        'actual_quantity': rd.get('actual_quantity'),
+        'actual_start': act_s_raw,
+        'actual_end': act_e_raw,
+        'actual_resource': act_res,
+        'setup_minutes': r['setup_minutes'],
+        'work_group': rd.get('work_group') or '',
+        'min_skill': rd.get('min_skill') or '',
+        'qc_skill': rd.get('qc_skill') or '',
+    }
+
+
+def _gantt_range_sql_clause():
+    """WHERE fragment: plan window or actual window intersects [start_date, end_date)."""
+    return (
+        '(start_time < ? AND end_time > ?) OR '
+        '(actual_start IS NOT NULL AND actual_end IS NOT NULL '
+        'AND actual_start < ? AND actual_end > ?)'
+    )
+
 
 @app.context_processor
 def inject_global_stats():
@@ -75,9 +188,16 @@ def init_db():
             start_time TEXT,
             end_time TEXT,
             quantity REAL,
+            actual_quantity REAL,
             status TEXT,
             process_name TEXT,
             setup_minutes REAL,
+            actual_start TEXT,
+            actual_end TEXT,
+            actual_resource TEXT,
+            work_group TEXT,
+            min_skill TEXT,
+            qc_skill TEXT,
             uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -114,6 +234,20 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN operation_out_item TEXT")
         if "setup_minutes" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN setup_minutes REAL")
+        if "actual_quantity" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN actual_quantity REAL")
+        if "actual_start" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN actual_start TEXT")
+        if "actual_end" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN actual_end TEXT")
+        if "actual_resource" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN actual_resource TEXT")
+        if "work_group" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN work_group TEXT")
+        if "min_skill" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN min_skill TEXT")
+        if "qc_skill" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN qc_skill TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -150,29 +284,36 @@ def index():
 def upload():
     if request.method == 'POST':
         ensure_db_schema()
-        if 'file' not in request.files:
+        uploaded_files = request.files.getlist('files')
+        candidates = [f for f in uploaded_files if f and f.filename and f.filename.strip() != '']
+        if not candidates:
             flash('No file selected', 'error')
             return redirect(request.url)
 
-        file = request.files['file']
-        if file.filename == '':
-            flash('No file selected', 'error')
-            return redirect(request.url)
+        conn = get_db()
+        total_rows = 0
+        imported_files = []
+        skipped = []
 
-        if file and allowed_file(file.filename):
+        for file in candidates:
+            if not allowed_file(file.filename):
+                skipped.append(f'{file.filename} (not CSV)')
+                continue
             filename = secure_filename(file.filename)
-            content_bytes = file.read()
-            reader, _, _ = csv_dict_reader_from_bytes(content_bytes)
-            headers = reader.fieldnames or []
+            try:
+                content_bytes = file.read()
+                reader, _, _ = csv_dict_reader_from_bytes(content_bytes)
+                headers = reader.fieldnames or []
+            except Exception:
+                skipped.append(f'{file.filename} (read error)')
+                continue
 
             if not headers:
-                flash('CSV file appears to be empty or invalid', 'error')
-                return redirect(request.url)
+                skipped.append(f'{file.filename} (empty or invalid)')
+                continue
 
             mapping = detect_columns(headers)
             rows = list(reader)
-
-            conn = get_db()
             count = 0
             for row in rows:
                 rec = parse_schedule_upload_row(row, mapping)
@@ -181,8 +322,8 @@ def upload():
 
                 conn.execute('''
                     INSERT INTO schedules 
-                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, min_skill, qc_skill)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     rec['order_id'],
                     rec['order_item_code'],
@@ -201,20 +342,68 @@ def upload():
                     rec['status'],
                     rec['process_name'],
                     rec['setup_minutes'],
+                    rec.get('actual_start'),
+                    rec.get('actual_end'),
+                    rec.get('actual_resource'),
+                    rec.get('work_group'),
+                    rec.get('min_skill'),
+                    rec.get('qc_skill'),
                 ))
                 count += 1
 
             conn.execute('INSERT INTO uploads (filename, row_count) VALUES (?, ?)', (filename, count))
-            conn.commit()
-            conn.close()
+            total_rows += count
+            imported_files.append(filename)
 
-            flash(f'Successfully imported {count} schedule records from {filename}', 'success')
+        conn.commit()
+        conn.close()
+
+        if skipped:
+            flash('Skipped: ' + '; '.join(skipped[:12]) + ('…' if len(skipped) > 12 else ''), 'warning')
+        if total_rows == 0:
+            flash('No schedule rows imported from the selected file(s)', 'error')
             return redirect(url_for('upload'))
-        else:
-            flash('Only CSV files are allowed', 'error')
+        flash(
+            f'Successfully imported {total_rows} schedule record(s) from {len(imported_files)} file(s): '
+            + ', '.join(imported_files[:8])
+            + ('…' if len(imported_files) > 8 else ''),
+            'success',
+        )
+        return redirect(url_for('upload'))
 
     ctx = get_schedule_context()
+    conn = get_db()
+    prior = conn.execute('SELECT DISTINCT filename FROM uploads ORDER BY filename').fetchall()
+    conn.close()
+    ctx['prior_upload_names_lower'] = [r['filename'].lower() for r in prior]
     return render_template('upload2.html', **ctx)
+
+
+@app.route('/export/schedules.csv')
+def export_schedules_csv():
+    """Download result.csv: Work_Code, Actual_Start, Actual_End, Actual_Resource, actual_quantity."""
+    ensure_db_schema()
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT * FROM schedules ORDER BY machine_name, start_time, id'
+    ).fetchall()
+    conn.close()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator='\r\n')
+    writer.writerow(result_csv_export_headers())
+    for row in rows:
+        writer.writerow(schedule_row_to_result_csv_cells(row))
+
+    data = buf.getvalue().encode('utf-8-sig')
+    mem = io.BytesIO(data)
+    mem.seek(0)
+    return send_file(
+        mem,
+        mimetype='text/csv; charset=utf-8',
+        as_attachment=True,
+        download_name='result.csv',
+    )
 
 
 def get_schedule_context(view=None, date_str=None, machine_filter=None):
@@ -252,7 +441,16 @@ def get_schedule_context(view=None, date_str=None, machine_filter=None):
     uploads = conn.execute('SELECT * FROM uploads ORDER BY uploaded_at DESC LIMIT 5').fetchall()
     total = conn.execute('SELECT COUNT(*) as c FROM schedules').fetchone()['c']
     machines = conn.execute(
-        'SELECT DISTINCT machine_name FROM schedules WHERE machine_name IS NOT NULL ORDER BY machine_name'
+        '''
+        SELECT m AS machine_name FROM (
+            SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
+            WHERE machine_name IS NOT NULL AND TRIM(machine_name) <> ''
+            UNION
+            SELECT DISTINCT TRIM(actual_resource) AS m FROM schedules
+            WHERE actual_resource IS NOT NULL AND TRIM(actual_resource) <> ''
+        )
+        ORDER BY m
+        '''
     ).fetchall()
     query = '''
         SELECT * FROM schedules 
@@ -345,7 +543,16 @@ def gantt():
 
     conn = get_db()
     machines = conn.execute(
-        'SELECT DISTINCT machine_name FROM schedules WHERE machine_name IS NOT NULL ORDER BY machine_name'
+        '''
+        SELECT m AS machine_name FROM (
+            SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
+            WHERE machine_name IS NOT NULL AND TRIM(machine_name) <> ''
+            UNION
+            SELECT DISTINCT TRIM(actual_resource) AS m FROM schedules
+            WHERE actual_resource IS NOT NULL AND TRIM(actual_resource) <> ''
+        )
+        ORDER BY m
+        '''
     ).fetchall()
 
     # Distinct order item codes (WorkUser_OrderItem) for dropdown
@@ -358,15 +565,14 @@ def gantt():
         '''
     ).fetchall()
 
-    query = '''
-        SELECT * FROM schedules 
-        WHERE start_time < ? AND end_time > ?
-    '''
-    params = [end_date.strftime('%Y-%m-%d %H:%M:%S'), start_date.strftime('%Y-%m-%d %H:%M:%S')]
+    range_end = end_date.strftime('%Y-%m-%d %H:%M:%S')
+    range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
+    query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
+    params = [range_end, range_start, range_end, range_start]
 
     if machine_filter:
-        query += ' AND machine_name = ?'
-        params.append(machine_filter)
+        query += ' AND (machine_name = ? OR actual_resource = ?)'
+        params.extend([machine_filter, machine_filter])
     # item_filter is used only for link highlighting on frontend; keep data set complete
 
     query += ' ORDER BY machine_name, start_time'
@@ -375,30 +581,9 @@ def gantt():
 
     tasks = []
     for r in records:
-        try:
-            s = datetime.strptime(r['start_time'], '%Y-%m-%d %H:%M:%S')
-            e = datetime.strptime(r['end_time'], '%Y-%m-%d %H:%M:%S') if r['end_time'] else s + timedelta(hours=1)
-        except Exception:
-            continue
-        tasks.append({
-            'id': r['id'],
-            'machine': r['machine_name'] or 'Unknown',
-            'order_id': r['order_id'] or '',
-            'order_item_code': r['order_item_code'] or '',
-            'operation_id': r['operation_id'] or '',
-            'next_operation_id': r['next_operation_id'] or '',
-            'operation_code': r['operation_code'] or '',
-            'next_operation_code': r['next_operation_code'] or '',
-            'operation_out_item': r['operation_out_item'] or '',
-            'item_id': r['item_id'] or '',
-            'item_name': r['item_name'] or r['item_id'] or '',
-            'process_name': r['process_name'] or '',
-            'start': s.isoformat(),
-            'end': e.isoformat(),
-            'status': r['status'] or 'Scheduled',
-            'quantity': r['quantity'],
-            'setup_minutes': r['setup_minutes'],
-        })
+        t = _sched_row_to_gantt_task(r)
+        if t:
+            tasks.append(t)
 
     if view in ('weekly', '2week', '3week'):
         span_days = {'weekly': 7, '2week': 14, '3week': 21}[view]
@@ -419,18 +604,36 @@ def gantt():
         prev_date = (start_date - timedelta(days=1)).strftime('%Y-%m-%d')
         next_date = (start_date + timedelta(days=1)).strftime('%Y-%m-%d')
 
-    return render_template('gantt2.html',
-        tasks=tasks,
-        machines=machines,
-        order_items=order_items,
-        view=view,
-        current_date=current_date,
-        start_date=start_date,
-        end_date=end_date,
-        prev_date=prev_date,
-        next_date=next_date,
-        machine_filter=machine_filter,
-        item_filter=item_filter,
+    return (
+        render_template(
+            'gantt2.html',
+            tasks=tasks,
+            machines=machines,
+            order_items=order_items,
+            view=view,
+            current_date=current_date,
+            start_date=start_date,
+            end_date=end_date,
+            prev_date=prev_date,
+            next_date=next_date,
+            machine_filter=machine_filter,
+            item_filter=item_filter,
+        ),
+        200,
+        GANTT_PAGE_HEADERS,
+    )
+
+
+@app.route('/viewer-check')
+@app.route('/__asprova_viewer_check')
+def asprova_viewer_check():
+    """このプロセスが読み込んだ app.py のパスとガント用ヘッダ定義を返す（別フォルダ起動の切り分け用）。"""
+    return jsonify(
+        ok=True,
+        app_py=str(Path(__file__).resolve()),
+        platform_root=str(PLATFORM_ROOT),
+        gantt_page_revision='5',
+        gantt_response_headers=dict(GANTT_PAGE_HEADERS),
     )
 
 
@@ -463,42 +666,194 @@ def api_gantt_data():
         end_date = current_date + timedelta(days=1)
 
     conn = get_db()
-    query = 'SELECT * FROM schedules WHERE start_time < ? AND end_time > ?'
-    params = [end_date.strftime('%Y-%m-%d %H:%M:%S'), start_date.strftime('%Y-%m-%d %H:%M:%S')]
+    range_end = end_date.strftime('%Y-%m-%d %H:%M:%S')
+    range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
+    query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
+    params = [range_end, range_start, range_end, range_start]
     if machine_filter:
-        query += ' AND machine_name = ?'
-        params.append(machine_filter)
+        query += ' AND (machine_name = ? OR actual_resource = ?)'
+        params.extend([machine_filter, machine_filter])
     query += ' ORDER BY machine_name, start_time'
     records = conn.execute(query, params).fetchall()
     conn.close()
 
     tasks = []
     for r in records:
-        try:
-            s = datetime.strptime(r['start_time'], '%Y-%m-%d %H:%M:%S')
-            e = datetime.strptime(r['end_time'], '%Y-%m-%d %H:%M:%S') if r['end_time'] else s + timedelta(hours=1)
-        except Exception:
-            continue
-        tasks.append({
-            'id': r['id'],
-            'machine': r['machine_name'] or 'Unknown',
-            'order_id': r['order_id'] or '',
-            'order_item_code': r['order_item_code'] or '',
-            'operation_id': r['operation_id'] or '',
-            'next_operation_id': r['next_operation_id'] or '',
-            'operation_code': r['operation_code'] or '',
-            'next_operation_code': r['next_operation_code'] or '',
-            'operation_out_item': r['operation_out_item'] or '',
-            'item_id': r['item_id'] or '',
-            'item_name': r['item_name'] or r['item_id'] or '',
-            'process_name': r['process_name'] or '',
-            'start': s.isoformat(),
-            'end': e.isoformat(),
-            'status': r['status'] or 'Scheduled',
-            'quantity': r['quantity'],
-            'setup_minutes': r['setup_minutes'],
-        })
+        t = _sched_row_to_gantt_task(r)
+        if t:
+            tasks.append(t)
     return jsonify(tasks)
+
+
+@app.route('/api/schedules/freeze_cutoff', methods=['POST'])
+def api_schedules_freeze_cutoff():
+    """
+    Frozen: for rows with start_time on or before cutoff_date 23:59:59,
+    set status 'D', fill null/empty actuals from plan, leave existing actuals unchanged.
+    Optional JSON body key "machine": limit to that resource (machine_name or actual_resource).
+    """
+    data = request.get_json(silent=True) or {}
+    raw = data.get('cutoff_date') or data.get('date')
+    if not raw or not isinstance(raw, str):
+        return jsonify({'ok': False, 'error': 'cutoff_date (YYYY-MM-DD) required'}), 400
+    raw = raw.strip()
+    try:
+        datetime.strptime(raw, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'ok': False, 'error': 'Invalid cutoff_date'}), 400
+    cutoff_end = f'{raw} 23:59:59'
+
+    machine = data.get('machine') or data.get('resource') or ''
+    machine = machine.strip() if isinstance(machine, str) else ''
+
+    sql = '''
+        UPDATE schedules SET
+            status = 'D',
+            actual_start = CASE
+                WHEN actual_start IS NULL OR TRIM(COALESCE(actual_start, '')) = '' THEN start_time
+                ELSE actual_start
+            END,
+            actual_end = CASE
+                WHEN actual_end IS NULL OR TRIM(COALESCE(actual_end, '')) = '' THEN end_time
+                ELSE actual_end
+            END,
+            actual_quantity = CASE
+                WHEN actual_quantity IS NULL THEN quantity
+                ELSE actual_quantity
+            END
+        WHERE start_time IS NOT NULL
+          AND TRIM(start_time) <> ''
+          AND start_time <= ?
+    '''
+    params = [cutoff_end]
+    if machine:
+        sql += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
+        params.extend([machine, machine])
+
+    conn = get_db()
+    cur = conn.execute(sql, params)
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'updated': n, 'cutoff_date': raw, 'cutoff_end': cutoff_end})
+
+
+@app.route('/api/schedules/<int:sched_id>/actual_quantity', methods=['POST'])
+def api_schedule_actual_quantity(sched_id):
+    """Update 実績数量 (actual quantity) for one schedule row."""
+    data = request.get_json(silent=True) or {}
+    raw = data.get('actual_quantity')
+    conn = get_db()
+    row = conn.execute('SELECT id FROM schedules WHERE id = ?', (sched_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not found'}), 404
+    if raw is None or (isinstance(raw, str) and raw.strip() == ''):
+        conn.execute('UPDATE schedules SET actual_quantity = NULL WHERE id = ?', (sched_id,))
+        stored = None
+    else:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({'ok': False, 'error': 'Invalid number'}), 400
+        conn.execute('UPDATE schedules SET actual_quantity = ? WHERE id = ?', (val, sched_id))
+        stored = val
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'actual_quantity': stored})
+
+
+def _parse_iso_datetime_plan(s):
+    """Parse JSON/datetime string from client (ISO-8601, optional Z) to naive local datetime."""
+    if not isinstance(s, str):
+        raise ValueError('expected string')
+    s = s.strip()
+    if s.endswith('Z'):
+        s = s[:-1] + '+00:00'
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+@app.route('/api/schedules/<int:sched_id>/plan_times', methods=['POST'])
+def api_schedule_plan_times(sched_id):
+    """Store gantt drag result in actual_start, actual_end, actual_resource (plan columns unchanged)."""
+    data = request.get_json(silent=True) or {}
+    start_raw = data.get('start')
+    end_raw = data.get('end')
+    machine_name = data.get('machine_name')
+    if not start_raw or not end_raw:
+        return jsonify({'ok': False, 'error': 'start and end required'}), 400
+    try:
+        s_dt = _parse_iso_datetime_plan(start_raw)
+        e_dt = _parse_iso_datetime_plan(end_raw)
+    except (ValueError, TypeError):
+        return jsonify({'ok': False, 'error': 'Invalid datetime'}), 400
+    if e_dt <= s_dt:
+        return jsonify({'ok': False, 'error': 'end must be after start'}), 400
+
+    conn = get_db()
+    row = conn.execute('SELECT * FROM schedules WHERE id = ?', (sched_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not found'}), 404
+
+    start_txt = s_dt.strftime('%Y-%m-%d %H:%M:%S')
+    end_txt = e_dt.strftime('%Y-%m-%d %H:%M:%S')
+    if machine_name is not None and isinstance(machine_name, str) and machine_name.strip() != '':
+        res_txt = machine_name.strip()
+    else:
+        res_txt = (row['machine_name'] or '').strip() or 'Unknown'
+
+    conn.execute(
+        'UPDATE schedules SET actual_start = ?, actual_end = ?, actual_resource = ? WHERE id = ?',
+        (start_txt, end_txt, res_txt, sched_id),
+    )
+    conn.commit()
+    row2 = conn.execute('SELECT * FROM schedules WHERE id = ?', (sched_id,)).fetchone()
+    conn.close()
+    task = _sched_row_to_gantt_task(row2) if row2 else None
+    if not task:
+        return jsonify({'ok': False, 'error': 'Row invalid after update'}), 500
+    out = {'ok': True}
+    out.update(task)
+    return jsonify(out)
+
+
+@app.route('/api/schedules/<int:sched_id>/clear_actual_results', methods=['POST'])
+def api_schedule_clear_actual_results(sched_id):
+    """
+    Gantt Result Reset: clear actual_* overlays and snap resource label to plan
+    (machine_id → machine_name when id is set). Plan start_time, end_time, quantity are unchanged.
+    """
+    conn = get_db()
+    row = conn.execute('SELECT id FROM schedules WHERE id = ?', (sched_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'ok': False, 'error': 'Not found'}), 404
+    conn.execute(
+        '''
+        UPDATE schedules SET
+            actual_start = NULL,
+            actual_end = NULL,
+            actual_quantity = NULL,
+            actual_resource = NULL,
+            machine_name = COALESCE(NULLIF(TRIM(machine_id), ''), machine_name)
+        WHERE id = ?
+        ''',
+        (sched_id,),
+    )
+    conn.commit()
+    row2 = conn.execute('SELECT * FROM schedules WHERE id = ?', (sched_id,)).fetchone()
+    conn.close()
+    task = _sched_row_to_gantt_task(row2) if row2 else None
+    if not task:
+        return jsonify({'ok': False, 'error': 'Row invalid after update'}), 500
+    out = {'ok': True}
+    out.update(task)
+    return jsonify(out)
 
 
 @app.route('/export_monthly')
@@ -1156,4 +1511,12 @@ if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     init_db()
     ensure_db_schema()
+    _viewer_app_py = Path(__file__).resolve()
+    print()
+    print('=== ASPROVA Viewer (SQLite / Gantt) ===')
+    print(f'  使用中の app.py: {_viewer_app_py}')
+    print('  動作確認: http://127.0.0.1:5000/viewer-check （または /__asprova_viewer_check）')
+    print('  （別パスが出る場合は、今いるフォルダ違いの app.py を起動しています）')
+    print('========================================')
+    print()
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -33,6 +33,17 @@
     opacity: 0.5;
 }
 
+.upload-folder-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    user-select: none;
+}
+.upload-folder-toggle input { accent-color: var(--accent); }
+
 .machine-section { margin-bottom: 20px; }
 .machine-header {
     background: var(--surface2);
@@ -51,6 +62,23 @@
     border-radius: 0 0 8px 8px;
     overflow: hidden;
 }
+
+#file-preview-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    text-align: left;
+}
+#file-preview-list li {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-bright);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+#file-preview-list li:last-child { border-bottom: none; }
 </style>
 {% endblock %}
 
@@ -68,27 +96,32 @@
     </div>
     <div class="card-body">
         <form method="POST" enctype="multipart/form-data" id="upload-form">
+            <label class="upload-folder-toggle" title="Recommended: Chrome / Edge">
+                <input type="checkbox" id="folder-mode" value="1">
+                <span>Select folder (import all CSV files in the folder)</span>
+            </label>
+
             <div class="drop-zone" id="drop-zone">
-                <input type="file" name="file" accept=".csv" id="file-input" required>
+                <input type="file" name="files" id="file-input" multiple accept=".csv">
                 <div class="drop-icon">📂</div>
                 <div style="font-size:16px; font-weight:500; color:var(--text-bright); margin-bottom:8px;" id="drop-label">
-                    Drop CSV file here or click to browse
+                    Drop CSV files here or click to select files
                 </div>
                 <div style="font-size:12px; color:var(--text-dim);">
-                    Supports comma, tab, semicolon, pipe delimiters · Max 16MB
+                    Multiple files/folders supported · Delimiters: comma/tab/etc. · Total max 16MB
                 </div>
             </div>
 
             <div id="file-preview" style="display:none; margin-top:16px;">
-                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:12px 16px; display:flex; align-items:center; justify-content:space-between;">
-                    <div style="display:flex; align-items:center; gap:10px;">
+                <div style="background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:12px 16px;">
+                    <div style="display:flex; align-items:flex-start; gap:10px;">
                         <span style="font-size:20px;">📄</span>
-                        <div>
-                            <div id="file-name" class="mono" style="font-size:13px; color:var(--text-bright);"></div>
-                            <div id="file-size" style="font-size:11px; color:var(--text-dim); margin-top:2px;"></div>
+                        <div style="flex:1; min-width:0;">
+                            <div id="file-summary" class="mono" style="font-size:12px; color:var(--text-bright); margin-bottom:6px;"></div>
+                            <ul id="file-preview-list"></ul>
                         </div>
+                        <span style="color:var(--success); font-size:18px;">✓</span>
                     </div>
-                    <span style="color:var(--success); font-size:18px;">✓</span>
                 </div>
             </div>
 
@@ -106,22 +139,74 @@
 
 {% block scripts %}
 <script>
+const PRIOR_UPLOAD_NAMES_LOWER = new Set({{ prior_upload_names_lower | default([]) | tojson }});
+
 const fileInput = document.getElementById('file-input');
+const folderMode = document.getElementById('folder-mode');
 const dropZone = document.getElementById('drop-zone');
 const dropLabel = document.getElementById('drop-label');
 const filePreview = document.getElementById('file-preview');
-const fileName = document.getElementById('file-name');
-const fileSize = document.getElementById('file-size');
+const fileSummary = document.getElementById('file-summary');
+const filePreviewList = document.getElementById('file-preview-list');
+const uploadForm = document.getElementById('upload-form');
 
-fileInput.addEventListener('change', function() {
-    if (this.files.length > 0) {
-        const f = this.files[0];
-        fileName.textContent = f.name;
-        fileSize.textContent = (f.size / 1024).toFixed(1) + ' KB';
-        filePreview.style.display = 'block';
-        dropLabel.textContent = 'File selected — click Upload to proceed';
+function isCsvFile(f) {
+    return f && f.name && f.name.toLowerCase().endsWith('.csv');
+}
+
+function applyFolderModeAttrs() {
+    if (folderMode.checked) {
+        fileInput.setAttribute('webkitdirectory', '');
+        fileInput.setAttribute('directory', '');
+        fileInput.removeAttribute('accept');
+        dropLabel.textContent = 'Select a folder or drop a folder here (CSV files only)';
+    } else {
+        fileInput.removeAttribute('webkitdirectory');
+        fileInput.removeAttribute('directory');
+        fileInput.setAttribute('accept', '.csv');
+        dropLabel.textContent = 'Drop CSV files here or click to select files';
     }
+}
+
+folderMode.addEventListener('change', () => {
+    applyFolderModeAttrs();
+    fileInput.value = '';
+    filePreview.style.display = 'none';
 });
+
+applyFolderModeAttrs();
+
+function refreshPreview() {
+    const all = Array.from(fileInput.files || []);
+    const csvFiles = all.filter(isCsvFile);
+    if (all.length === 0) {
+        filePreview.style.display = 'none';
+        return;
+    }
+    filePreview.style.display = 'block';
+    const nonCsv = all.length - csvFiles.length;
+    let sum = 0;
+    csvFiles.forEach((f) => { sum += f.size; });
+    fileSummary.textContent =
+        csvFiles.length + ' CSV file(s) (total entries: ' + all.length + ') · Total ' +
+        (sum / 1024).toFixed(1) + ' KB' +
+        (nonCsv > 0 ? ' · Non-CSV skipped on server: ' + nonCsv : '');
+    filePreviewList.innerHTML = '';
+    const show = csvFiles.slice(0, 80);
+    show.forEach((f) => {
+        const li = document.createElement('li');
+        li.textContent = (f.webkitRelativePath || f.name) + ' · ' + (f.size / 1024).toFixed(1) + ' KB';
+        filePreviewList.appendChild(li);
+    });
+    if (csvFiles.length > 80) {
+        const li = document.createElement('li');
+        li.style.color = 'var(--text-dim)';
+        li.textContent = '... and ' + (csvFiles.length - 80) + ' more file(s)';
+        filePreviewList.appendChild(li);
+    }
+}
+
+fileInput.addEventListener('change', refreshPreview);
 
 dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
@@ -131,6 +216,40 @@ dropZone.addEventListener('drop', (e) => {
     if (e.dataTransfer.files.length > 0) {
         fileInput.files = e.dataTransfer.files;
         fileInput.dispatchEvent(new Event('change'));
+    }
+});
+
+function hasDuplicateBasenames(files) {
+    const seen = new Set();
+    for (let i = 0; i < files.length; i++) {
+        const n = files[i].name;
+        if (seen.has(n)) return true;
+        seen.add(n);
+    }
+    return false;
+}
+
+function overlapsPriorUpload(files) {
+    for (let i = 0; i < files.length; i++) {
+        const low = files[i].name.toLowerCase();
+        if (PRIOR_UPLOAD_NAMES_LOWER.has(low)) return true;
+    }
+    return false;
+}
+
+uploadForm.addEventListener('submit', (e) => {
+    const all = Array.from(fileInput.files || []);
+    const csvFiles = all.filter(isCsvFile);
+    if (csvFiles.length === 0) {
+        e.preventDefault();
+        alert('Please select at least one CSV file.');
+        return;
+    }
+    const dupInBatch = hasDuplicateBasenames(csvFiles);
+    const dupPrior = overlapsPriorUpload(csvFiles);
+    if (dupInBatch || dupPrior) {
+        const ok = confirm('Files with the same name exist. Do you want to overwrite?');
+        if (!ok) e.preventDefault();
     }
 });
 

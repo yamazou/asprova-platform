@@ -177,15 +177,15 @@ def get_connection():
     user = session.get("oracle_user")
     password = session.get("oracle_password")
     if not (user and password):
-        raise RuntimeError("未接続です。先に「Connect mcframe」からOracleへ接続してください。")
-    dsn = "orcl"
+        raise RuntimeError("未接続です。先に「Connect」からOracleへ接続してください。")
+    dsn = session.get("oracle_dsn") or "orcl"
     return oracledb.connect(user=user, password=password, dsn=dsn)
 
 
 def get_schema() -> str:
     schema = session.get("oracle_schema")
     if not schema:
-        raise RuntimeError("未接続です。先に「Connect mcframe」からOracleへ接続してください。")
+        raise RuntimeError("未接続です。先に「Connect」からOracleへ接続してください。")
     return schema
 
 
@@ -223,8 +223,9 @@ def connect_oracle():
     oracle_id = request.form.get("oracle_id", "").strip()
     oracle_pwd = request.form.get("oracle_pwd", "")
     oracle_schema = request.form.get("oracle_schema", "").strip()
-    if not oracle_id or not oracle_pwd or not oracle_schema:
-        flash("ID / Password / Schema を入力してください。", "error")
+    oracle_dsn = request.form.get("oracle_dsn", "").strip()
+    if not oracle_id or not oracle_pwd or not oracle_schema or not oracle_dsn:
+        flash("ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name) を入力してください。", "error")
         return redirect(url_for("index"))
 
     if not _SCHEMA_RE.match(oracle_schema):
@@ -235,21 +236,18 @@ def connect_oracle():
 
     # ここで初めてOracleに接続し、成功したらセッションに保持
     try:
-        conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn="orcl")
+        conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn=oracle_dsn)
         conn.close()
     except Exception as exc:  # noqa: BLE001
-        session.pop("oracle_user", None)
-        session.pop("oracle_password", None)
-        session.pop("oracle_schema", None)
-        session.pop("oracle_connected", None)
         flash(f"接続に失敗しました: {exc}", "error")
         return redirect(url_for("index"))
 
     session["oracle_user"] = oracle_id
     session["oracle_password"] = oracle_pwd
     session["oracle_schema"] = oracle_schema
+    session["oracle_dsn"] = oracle_dsn
     session["oracle_connected"] = True
-    flash("接続に成功しました。", "success")
+    flash("Connection successful.", "success")
     return redirect(url_for("index"))
 
 

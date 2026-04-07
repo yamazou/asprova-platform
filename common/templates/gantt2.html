@@ -2,29 +2,81 @@
 {% block title %}Gantt Chart — Asprova Schedule Viewer{% endblock %}
 
 {% block extra_styles %}
+<!-- asprova-gantt-revision:6 （ページソースにこれが無ければ別サーバー／古いテンプレートです） -->
 <style>
+/* タイトル行を無くした分、チャートを縦に広く使う */
+.gantt-view .gantt-controls {
+    margin-top: 0;
+    margin-bottom: 8px;
+    gap: 8px;
+}
+
 .gantt-container {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    overflow: hidden;
+    /* overflow:visible — hidden breaks position:sticky on thead inside nested scroll */
+    overflow: visible;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 150px);
+    min-height: 280px;
 }
 
-.gantt-scroll-wrap {
-    overflow-x: auto;
-    overflow-y: auto;
+#gantt-root {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.gantt-viewport-stack {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.gantt-scroll-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    /* hidden on x-axis breaks vertical sticky on <th> in many engines; use scroll + hide bar */
+    overflow-x: scroll;
+    overflow-y: scroll;
+    scrollbar-gutter: stable;
+}
+
+.gantt-scroll-main::-webkit-scrollbar {
+    width: 14px;
+}
+.gantt-scroll-main::-webkit-scrollbar:horizontal {
+    height: 0;
+    display: none;
+}
+
+.gantt-scroll-hbar {
+    flex: 0 0 auto;
+    overflow-x: scroll;
+    overflow-y: hidden;
+    border-top: 1px solid var(--border);
+    background: var(--surface2);
+    scrollbar-gutter: stable;
+    min-height: 10px;
+}
+
+.gantt-scroll-hbar-inner {
+    height: 1px;
+    pointer-events: none;
 }
 
 .gantt-table {
-    border-collapse: collapse;
-    min-width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
     table-layout: fixed;
+    /* separate: required for position:sticky on thead cells in most browsers */
 }
 
 .gantt-row-label {
-    width: 180px;
-    min-width: 180px;
-    max-width: 180px;
     position: sticky;
     left: 0;
     background: var(--surface);
@@ -33,14 +85,31 @@
 }
 
 .gantt-header-label {
-    width: 180px;
-    min-width: 180px;
-    max-width: 180px;
     position: sticky;
     left: 0;
     background: var(--surface2);
     z-index: 20;
     border-right: 2px solid var(--border);
+}
+
+/* Date row: sticky top inside .gantt-scroll-main (needs no overflow:hidden ancestors) */
+.gantt-table thead .gantt-th {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 15;
+    box-shadow: 0 1px 0 rgba(30, 58, 95, 0.45);
+    background-clip: padding-box;
+}
+.gantt-table thead .gantt-header-label {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    left: 0;
+    z-index: 30;
+    background-clip: padding-box;
+    text-align: center;
+    vertical-align: middle;
 }
 
 .gantt-th {
@@ -51,6 +120,7 @@
     text-align: center;
     border-right: 1px solid rgba(30,58,95,0.5);
     background: var(--surface2);
+    position: -webkit-sticky;
     position: sticky;
     top: 0;
     z-index: 5;
@@ -62,6 +132,22 @@
 .gantt-th.hour-marker {
     border-right: 1px solid var(--border);
     color: var(--text);
+}
+
+/* Drag date column edge to scale entire timeline (same factor as Zoom buttons) */
+.gantt-th-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -5px;
+    width: 10px;
+    bottom: 0;
+    cursor: col-resize;
+    z-index: 40;
+    background: transparent;
+    box-sizing: border-box;
+}
+.gantt-th-resize-handle:hover {
+    background: rgba(0, 212, 255, 0.12);
 }
 
 .gantt-cell {
@@ -114,14 +200,33 @@
     border-radius: 3px;
     border: 1px solid;
     display: flex;
-    align-items: center;
-    padding: 0 6px;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding: 2px 6px 0 6px;
     cursor: pointer;
     transition: filter 0.1s, transform 0.1s;
     /* Allow label to extend beyond short bars (overlap is OK) */
     overflow: visible;
     min-width: 4px;
     z-index: 2;
+}
+
+/* Flex 内の単一 span だと <br> 後の行が潰れる環境があるため、計画/実績を縦に積む */
+.gantt-bar-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 0;
+    min-width: 0;
+    align-self: stretch;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    position: relative;
+    z-index: 1;
+    line-height: 1.2;
 }
 
 .gantt-setup {
@@ -138,14 +243,116 @@
     filter: brightness(1.3);
     z-index: 10;
 }
+.gantt-bar.gantt-bar--draggable {
+    cursor: grab;
+}
+.gantt-bar--dragging {
+    cursor: grabbing;
+    touch-action: none;
+    opacity: 0.92;
+    z-index: 50 !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    filter: brightness(1.15);
+}
+.gantt-bar--resizing {
+    touch-action: none;
+    opacity: 0.95;
+    z-index: 50 !important;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+}
+.gantt-bar-resize {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 10px;
+    max-width: 35%;
+    z-index: 6;
+    pointer-events: auto;
+    cursor: ew-resize;
+    box-sizing: border-box;
+}
+.gantt-bar-resize--left {
+    left: 0;
+}
+.gantt-bar-resize--right {
+    right: 0;
+}
+.gantt-bar-resize:hover {
+    background: rgba(13, 71, 161, 0.2);
+}
 
 .gantt-bar-text {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
+    font-family: Meiryo, 'Meiryo UI', 'Yu Gothic UI', 'MS PGothic', sans-serif;
+    font-size: 9px;
+    font-weight: 300;
+    color: #000000;
     white-space: normal;
-    font-weight: 500;
     pointer-events: none;
-    line-height: 1.15;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+}
+/* 移動・伸縮などで実績が計画とずれたときの品目コード行 */
+.gantt-bar-text.gantt-bar-item--adjusted {
+    color: #0d47a1;
+    -webkit-text-fill-color: #0d47a1;
+    font-weight: 500;
+}
+
+.gantt-bar-lev {
+    display: block;
+    font-family: Meiryo, 'Meiryo UI', 'Yu Gothic UI', 'MS PGothic', sans-serif;
+    font-size: inherit;
+    font-weight: 300;
+    color: #000000;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+/* 実績数量行は .gantt-bar-text（黒）の外に置き、継承で潰されないようにする */
+.gantt-bar-qty-actual {
+    display: block;
+    font-family: Meiryo, 'Meiryo UI', 'Yu Gothic UI', 'MS PGothic', sans-serif;
+    font-weight: 500;
+    line-height: 1.2;
+    color: #0d47a1 !important;
+    -webkit-text-fill-color: #0d47a1 !important;
+}
+.gantt-bar-qty-plan {
+    display: block;
+    line-height: 1.2;
+}
+.gantt-bar-qty-hit {
+    pointer-events: auto;
+    cursor: pointer;
+    border-radius: 2px;
+}
+.gantt-bar-qty-hit:hover {
+    outline: 1px solid rgba(13, 71, 161, 0.45);
+    outline-offset: 1px;
+}
+.gantt-bar-qty-input {
+    display: block;
+    pointer-events: auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 1px 4px;
+    margin: 0;
+    line-height: 1.2;
+    border: 1px solid rgba(13, 71, 161, 0.7);
+    border-radius: 2px;
+    background: var(--surface);
+    color: #0d47a1;
+    font-family: Meiryo, 'Meiryo UI', 'Yu Gothic UI', 'MS PGothic', sans-serif;
+    font-weight: 500;
+    box-sizing: border-box;
+}
+.gantt-bar-qty-input:focus {
+    outline: none;
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.25);
 }
 
 /* Tooltip */
@@ -157,10 +364,45 @@
     padding: 10px 14px;
     font-size: 12px;
     z-index: 1000;
-    max-width: 280px;
-    pointer-events: none;
+    max-width: 320px;
+    pointer-events: auto;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
     display: none;
+}
+.tooltip--pinned {
+    border-color: var(--accent2);
+    box-shadow: 0 6px 28px rgba(0, 0, 0, 0.55);
+}
+.tooltip-pinned-bar {
+    display: none;
+    align-items: center;
+    justify-content: flex-end;
+    margin: -6px -10px 6px -10px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+}
+.tooltip--pinned .tooltip-pinned-bar {
+    display: flex;
+}
+.tooltip-unpin-btn {
+    line-height: 1;
+    padding: 2px 8px;
+    min-width: auto;
+    font-size: 16px;
+    opacity: 0.85;
+}
+.tooltip-unpin-btn:hover {
+    opacity: 1;
+}
+.tooltip-row--reset {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    justify-content: flex-end;
+}
+.tooltip-result-reset-btn {
+    font-size: 11px;
+    padding: 6px 12px;
 }
 
 .tooltip-title {
@@ -183,7 +425,7 @@
     color: var(--text-dim);
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
-    width: 70px;
+    width: 96px;
     flex-shrink: 0;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -192,6 +434,10 @@
 .tooltip-val {
     color: var(--text-bright);
     font-size: 11px;
+}
+.tooltip-val--plan-moved {
+    color: #0d47a1;
+    font-weight: 500;
 }
 
 /* Now line */
@@ -220,29 +466,32 @@
     padding: 80px 40px;
     text-align: center;
 }
+
+.gantt-frozen-bar__label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+.gantt-frozen-bar__date {
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+}
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <div>
-        <div class="page-title">Gantt Chart</div>
-        <div class="page-subtitle">
-            {% if view == 'weekly' %}
-                Week of {{ start_date.strftime('%b %d') }} – {{ end_date.strftime('%b %d, %Y') }}
-            {% else %}
-                {{ current_date.strftime('%A, %B %d, %Y') }}
-            {% endif %}
-        </div>
-    </div>
-</div>
-
-<div class="controls">
+<div class="gantt-view">
+<div class="controls gantt-controls">
     <div class="view-toggle">
         <a href="?view=daily&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'daily' %}active{% endif %}">Daily</a>
         <a href="?view=weekly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'weekly' %}active{% endif %}">Weekly</a>
-        <a href="?view=2week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '2week' %}active{% endif %}">2 Week</a>
-        <a href="?view=3week&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == '3week' %}active{% endif %}">3 Week</a>
         <a href="?view=monthly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'monthly' %}active{% endif %}">Monthly</a>
     </div>
 
@@ -258,32 +507,35 @@
         <a href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
     </div>
 
-    <a href="?view={{ view }}&date=&machine={{ machine_filter }}&item={{ item_filter }}" class="btn btn-primary btn-sm">Today</a>
+    <a href="?view={{ view }}&date=&machine={{ machine_filter }}" class="btn btn-primary btn-sm">Today</a>
 
-    <form method="GET" style="display:flex; gap:8px; align-items:center; margin-left:auto;">
-        <input type="hidden" name="view" value="{{ view }}">
-        <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
-        <select name="chart_kind" onchange="this.form.submit()">
-            <option value="resource">Resource Gantt Chart</option>
-            <option value="order" disabled>Order Gantt Chart</option>
-        </select>
-        <select name="item" onchange="this.form.submit()">
-            <option value="">Not Selected</option>
-            <option value="__ALL__" {% if item_filter == '__ALL__' %}selected{% endif %}>All Items</option>
-            {% for it in order_items %}
-            <option value="{{ it.order_item_code }}" {% if item_filter == it.order_item_code %}selected{% endif %}>{{ it.order_item_code }}</option>
-            {% endfor %}
-        </select>
-        <select name="machine" onchange="this.form.submit()">
-            <option value="">All Machines</option>
-            {% for m in machines %}
-            <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
-            {% endfor %}
-        </select>
-    </form>
+    <div class="view-zoom-bar" aria-label="Chart zoom">
+        <span class="view-zoom-bar__label">Zoom</span>
+        <button type="button" class="btn btn-sm btn-ghost" id="gantt-zoom-out" title="Zoom out">−</button>
+        <span class="view-zoom-bar__pct" id="gantt-zoom-pct">100%</span>
+        <button type="button" class="btn btn-sm btn-ghost" id="gantt-zoom-in" title="Zoom in">+</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="gantt-zoom-reset" title="Reset zoom">100%</button>
+    </div>
+
+    <div class="gantt-frozen-bar" style="display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap;">
+        <label for="gantt-frozen-date" class="gantt-frozen-bar__label" title="締め日（この日の 23:59 までに開始した作業が対象）">Cutoff</label>
+        <input type="date" id="gantt-frozen-date" name="gantt_frozen_date" class="gantt-frozen-bar__date"
+            value="{{ current_date.strftime('%Y-%m-%d') }}" aria-label="Frozen cutoff date" />
+        <button type="button" class="btn btn-sm btn-ghost" id="gantt-frozen-btn" title="Freeze tasks started on/before selected date 23:59 (copy plan values into missing actual results)">[Frozen]</button>
+        <form method="GET" style="display:flex; gap:8px; align-items:center;">
+            <input type="hidden" name="view" value="{{ view }}">
+            <input type="hidden" name="date" id="gantt-nav-date" value="{{ current_date.strftime('%Y-%m-%d') }}">
+            <select name="machine" id="gantt-machine-select" onchange="this.form.submit()" aria-label="Resource / machine filter">
+                <option value="">All resources</option>
+                {% for m in machines %}
+                <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
 </div>
 
-<div class="gantt-container" id="gantt-wrapper">
+<div class="gantt-container" id="gantt-wrapper" data-asprova-gantt-revision="6">
     {% if tasks %}
     <div id="gantt-root"></div>
     {% else %}
@@ -291,9 +543,14 @@
         <div style="font-size:48px; opacity:0.2; margin-bottom:16px;">📊</div>
         <div style="color:var(--text-dim); font-size:16px; margin-bottom:8px;">No operations in this period</div>
         <div style="color:var(--text-dim); font-size:13px; margin-bottom:24px;">Navigate to a different date or import data</div>
-        <a href="/upload" class="btn btn-primary">Import CSV</a>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center;">
+            <a href="/upload" class="btn btn-primary">Import CSV</a>
+            <a href="{{ url_for('export_schedules_csv') }}" class="btn btn-ghost"
+               data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">Export CSV</a>
+        </div>
     </div>
     {% endif %}
+</div>
 </div>
 
 <div class="tooltip" id="tooltip"></div>
@@ -304,6 +561,100 @@ const VIEW = "{{ view }}";
 const START_DATE = new Date("{{ start_date.strftime('%Y-%m-%dT00:00:00') }}");
 const END_DATE = new Date("{{ end_date.strftime('%Y-%m-%dT00:00:00') }}");
 const ITEM_FILTER = "{{ item_filter or '' }}";
+
+const VIEW_ZOOM_KEY = 'asprovaViewZoom';
+const LEGACY_GANTT_ZOOM_KEY = 'asprovaGanttZoom';
+const LEGACY_PSI_ZOOM_KEY = 'asprovaPsiZoom';
+const VIEW_ZOOM_MIN = 0.5;
+const VIEW_ZOOM_MAX = 5;
+
+function getViewZoom() {
+    let v = parseFloat(sessionStorage.getItem(VIEW_ZOOM_KEY), 10);
+    if (Number.isFinite(v)) return Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, v));
+    const g = parseFloat(sessionStorage.getItem(LEGACY_GANTT_ZOOM_KEY), 10);
+    const p = parseFloat(sessionStorage.getItem(LEGACY_PSI_ZOOM_KEY), 10);
+    const legacy = Number.isFinite(g) ? g : (Number.isFinite(p) ? p : NaN);
+    v = Number.isFinite(legacy) ? legacy : 1;
+    v = Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, v));
+    sessionStorage.setItem(VIEW_ZOOM_KEY, String(v));
+    return v;
+}
+
+function setViewZoomStored(z) {
+    const clamped = Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, z));
+    sessionStorage.setItem(VIEW_ZOOM_KEY, String(clamped));
+    return clamped;
+}
+
+function getGanttZoom() {
+    return getViewZoom();
+}
+function syncGanttZoomLabel() {
+    const el = document.getElementById('gantt-zoom-pct');
+    if (el) el.textContent = Math.round(getGanttZoom() * 100) + '%';
+}
+function setGanttZoom(next) {
+    setViewZoomStored(next);
+    syncGanttZoomLabel();
+    if (TASKS.length > 0) renderGantt();
+}
+
+let ganttColResize = null;
+let ganttColResizeRaf = null;
+
+function applyGanttDragZoom(z0, dx, baseCell) {
+    const raw = z0 + dx / baseCell;
+    const prev = getViewZoom();
+    const clamped = setViewZoomStored(raw);
+    if (Math.abs(clamped - prev) < 1e-9) return;
+    syncGanttZoomLabel();
+    if (TASKS.length > 0) renderGantt();
+}
+
+function endGanttColResize() {
+    if (ganttColResizeRaf) {
+        cancelAnimationFrame(ganttColResizeRaf);
+        ganttColResizeRaf = null;
+    }
+    if (ganttColResize) {
+        ganttColResize = null;
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', onGanttColResizeMove);
+        document.removeEventListener('mouseup', onGanttColResizeEnd);
+    }
+}
+
+function onGanttColResizeMove(e) {
+    if (!ganttColResize) return;
+    ganttColResize.lastClientX = e.clientX;
+    if (ganttColResizeRaf) return;
+    ganttColResizeRaf = requestAnimationFrame(() => {
+        ganttColResizeRaf = null;
+        if (!ganttColResize) return;
+        const dx = ganttColResize.lastClientX - ganttColResize.startX;
+        applyGanttDragZoom(ganttColResize.z0, dx, ganttColResize.baseCell);
+    });
+}
+
+function onGanttColResizeEnd() {
+    endGanttColResize();
+}
+
+function onGanttColResizeStart(e) {
+    if (!e.target.closest('.gantt-th-resize-handle')) return;
+    const th = e.target.closest('th.gantt-th--timeline');
+    if (!th) return;
+    if (ganttColResize) endGanttColResize();
+    e.preventDefault();
+    e.stopPropagation();
+    const baseCell = VIEW === 'daily' ? 60 : 120;
+    ganttColResize = { startX: e.clientX, z0: getViewZoom(), baseCell, lastClientX: e.clientX };
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', onGanttColResizeMove);
+    document.addEventListener('mouseup', onGanttColResizeEnd);
+}
+
+document.addEventListener('mousedown', onGanttColResizeStart);
 
 const COLORS = [
     { bg: 'rgba(0,212,255,0.15)', border: 'rgba(0,212,255,0.6)', text: '#00d4ff' },
@@ -317,14 +668,69 @@ const COLORS = [
 ];
 
 function getStatusColor(status) {
-    const s = (status || '').toLowerCase();
+    const s = (status || '').toLowerCase().trim();
+    if (s === 'd' || s === 'b') return { bg: 'rgba(130, 130, 135, 0.48)', border: 'rgba(75, 75, 80, 0.72)', text: '#2e2e32' };
     if (s.includes('progress') || s.includes('running')) return { bg: 'rgba(255,170,0,0.2)', border: 'rgba(255,170,0,0.7)', text: '#ffaa00' };
     if (s.includes('complete') || s.includes('done')) return { bg: 'rgba(0,204,102,0.2)', border: 'rgba(0,204,102,0.7)', text: '#00cc66' };
     return null;
 }
 
-if (TASKS.length > 0) {
-    renderGantt();
+let ganttHbarAbort = null;
+let ganttHbarResizeObserver = null;
+
+function setupGanttSyncedHorizontalBar() {
+    const main = document.getElementById('gantt-scroll-main');
+    const hbar = document.getElementById('gantt-scroll-hbar');
+    const inner = document.getElementById('gantt-scroll-hbar-inner');
+    if (!main || !hbar || !inner) return;
+
+    if (ganttHbarAbort) ganttHbarAbort.abort();
+    ganttHbarAbort = new AbortController();
+    const sig = ganttHbarAbort.signal;
+
+    if (ganttHbarResizeObserver) {
+        ganttHbarResizeObserver.disconnect();
+        ganttHbarResizeObserver = null;
+    }
+
+    function updateHbarInnerWidth() {
+        const sw = main.scrollWidth;
+        const cw = hbar.clientWidth || main.clientWidth;
+        inner.style.width = Math.max(sw, cw + 1, 1) + 'px';
+    }
+
+    function onMainScroll() {
+        if (ganttTooltipPinned) hideTooltip();
+        const maxM = Math.max(0, main.scrollWidth - main.clientWidth);
+        if (maxM === 0) {
+            if (hbar.scrollLeft !== 0) hbar.scrollLeft = 0;
+            return;
+        }
+        if (Math.abs(hbar.scrollLeft - main.scrollLeft) > 0.5) hbar.scrollLeft = main.scrollLeft;
+    }
+    function onHbarScroll() {
+        if (ganttTooltipPinned) hideTooltip();
+        const maxM = Math.max(0, main.scrollWidth - main.clientWidth);
+        if (maxM === 0) {
+            if (hbar.scrollLeft !== 0) hbar.scrollLeft = 0;
+            return;
+        }
+        if (Math.abs(main.scrollLeft - hbar.scrollLeft) > 0.5) main.scrollLeft = hbar.scrollLeft;
+    }
+
+    main.addEventListener('scroll', onMainScroll, { passive: true, signal: sig });
+    hbar.addEventListener('scroll', onHbarScroll, { passive: true, signal: sig });
+    window.addEventListener('resize', updateHbarInnerWidth, { passive: true, signal: sig });
+
+    ganttHbarResizeObserver = new ResizeObserver(() => {
+        requestAnimationFrame(updateHbarInnerWidth);
+    });
+    ganttHbarResizeObserver.observe(main);
+    const overlay = main.querySelector('.gantt-overlay-wrap');
+    if (overlay) ganttHbarResizeObserver.observe(overlay);
+
+    updateHbarInnerWidth();
+    requestAnimationFrame(updateHbarInnerWidth);
 }
 
 function escapeHtml(s) {
@@ -336,13 +742,482 @@ function escapeHtml(s) {
         .replace(/'/g, '&#39;');
 }
 
+/** Weekly/monthly column header: e.g. 3/1(Sat) */
+function formatGanttSlotDayLabel(d) {
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    const wd = d.toLocaleDateString('en-US', { weekday: 'short' });
+    return `${m}/${day}(${wd})`;
+}
+
 function getItemKey(task) {
     // Color by order item code (preferred), not by machine.
     return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
 }
 
+function formatGanttQtyLabel(q) {
+    if (q === null || q === undefined || q === '') return '—';
+    return Number.isFinite(Number(q)) && Number(q) % 1 === 0 ? String(Number(q)) : String(q);
+}
+
+function ganttBarLabelItemCode(task) {
+    return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
+}
+
+/** バー1行目: 品目(Group) — 品目は item 系を優先、Group は work_group */
+function ganttBarLabelItemGroupLine(task) {
+    const itemDisp = String(task.item_name || task.item_id || task.operation_out_item || '').trim();
+    const fallback = String(
+        task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || ''
+    ).trim();
+    const base = itemDisp || fallback || '—';
+    const grp = String(task.work_group || '').trim();
+    return grp ? `${base}(${grp})` : base;
+}
+
+function normalizeGanttActualQuantity(task) {
+    if (!task) return null;
+    let aq = task.actual_quantity;
+    if (aq === undefined) aq = task.actualQuantity;
+    if (aq === undefined) aq = task.actual_qty;
+    if (aq === undefined) aq = task.ActualQuantity;
+    if (aq === undefined || aq === null) return null;
+    if (typeof aq === 'string') {
+        const t = aq.trim();
+        if (t === '') return null;
+        const n = Number(t);
+        return Number.isFinite(n) ? n : null;
+    }
+    if (typeof aq === 'number') return Number.isFinite(aq) ? aq : null;
+    const n = Number(aq);
+    return Number.isFinite(n) ? n : null;
+}
+
+/** TASKS 本体と同一 id の行を返す（参照の取り違い対策） */
+function resolveTaskForGanttBar(task) {
+    if (!task || task.id == null) return task;
+    const tid = Number(task.id);
+    for (let i = 0; i < TASKS.length; i++) {
+        if (Number(TASKS[i].id) === tid) return TASKS[i];
+    }
+    return task;
+}
+
+/** 表示用 start/end/machine が計画 plan_* と異なる（移動・伸縮・リソース変更後） */
+function isGanttBarPlanAdjusted(task) {
+    if (!task) return false;
+    const ps = task.plan_start != null ? String(task.plan_start) : '';
+    const pe = task.plan_end != null ? String(task.plan_end) : '';
+    if (!ps && !pe) return false;
+    const pm = task.plan_machine != null ? String(task.plan_machine) : '';
+    return (
+        String(task.start || '') !== ps ||
+        String(task.end || '') !== pe ||
+        String(task.machine || '') !== pm
+    );
+}
+
+function ganttBarLabelMarkup(task, fsBar) {
+    const itemGroupLine = escapeHtml(ganttBarLabelItemGroupLine(task));
+    const nActual = normalizeGanttActualQuantity(task);
+    const itemAdj = isGanttBarPlanAdjusted(task) ? ' gantt-bar-item--adjusted' : '';
+    const line1 = `<span class="gantt-bar-text${itemAdj}" style="font-size:${fsBar}px;">${itemGroupLine}</span>`;
+    const minSk = String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim();
+    const levLabel = minSk ? `Lev${minSk}` : '\u00a0';
+    const line2 = `<span class="gantt-bar-lev" style="font-size:${fsBar}px;">${escapeHtml(levLabel)}</span>`;
+    const canEditQty = task.id != null && String(task.id) !== '';
+    const hitCls = canEditQty ? ' gantt-bar-qty-hit' : '';
+    const hitClick = canEditQty ? ' onclick="ganttBarQtyClick(event, this)"' : '';
+    const hitDblClick = canEditQty ? ' ondblclick="event.stopPropagation()"' : '';
+    const hitTitle = canEditQty ? ' title="Click to edit actual quantity"' : '';
+    let qtyLine;
+    if (nActual !== null) {
+        const lab = escapeHtml(formatGanttQtyLabel(nActual));
+        qtyLine = `<span class="gantt-bar-qty-actual${hitCls}" style="font-size:${fsBar}px;color:#0d47a1;-webkit-text-fill-color:#0d47a1"${hitClick}${hitDblClick}${hitTitle}>${lab}</span>`;
+    } else {
+        qtyLine = `<span class="gantt-bar-text gantt-bar-qty-plan${hitCls}" style="font-size:${fsBar}px;"${hitClick}${hitDblClick}${hitTitle}>${escapeHtml(formatGanttQtyLabel(task.quantity))}</span>`;
+    }
+    return `<div class="gantt-bar-inner">${line1}${line2}${qtyLine}</div>`;
+}
+
+function ganttBarResizeHandlesMarkup(task) {
+    if (!task || task.id == null || String(task.id) === '') return '';
+    return (
+        '<div class="gantt-bar-resize gantt-bar-resize--left" role="slider" aria-label="Change start time" title="Drag to change start time"></div>' +
+        '<div class="gantt-bar-resize gantt-bar-resize--right" role="slider" aria-label="Change end time" title="Drag to change end time"></div>'
+    );
+}
+
+let ganttTooltipPinned = false;
+let ganttTooltipPinnedBar = null;
+/** 移動・伸縮直後の誤ったダブルクリックでツールチップが開かないようにする */
+let ganttBarSuppressNextDblClick = false;
+
+let ganttBarDrag = null;
+let ganttBarResize = null;
+
+async function persistGanttActualPlanTimesAfterInteraction(taskId, startStr, endStr, machineName, positionEvent) {
+    try {
+        const res = await fetch(schedulePlanTimesUrl(taskId), {
+            method: 'POST',
+            headers: actualQtyFetchHeaders(),
+            body: JSON.stringify({
+                start: startStr,
+                end: endStr,
+                machine_name: machineName,
+            }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+            renderGantt();
+            return;
+        }
+        const tid = Number(taskId);
+        for (let i = 0; i < TASKS.length; i++) {
+            if (Number(TASKS[i].id) !== tid) continue;
+            Object.keys(data).forEach((k) => {
+                if (k === 'ok') return;
+                TASKS[i][k] = data[k];
+            });
+            break;
+        }
+        let reopenTaskId = null;
+        try {
+            if (ganttTooltipPinned && ganttTooltipPinnedBar) {
+                const tp = JSON.parse(ganttTooltipPinnedBar.dataset.task);
+                if (Number(tp.id) === tid) reopenTaskId = tid;
+            }
+        } catch (err) { /* ignore */ }
+        renderGantt();
+        if (reopenTaskId != null && positionEvent) {
+            const bars = document.querySelectorAll('.gantt-bar');
+            for (let j = 0; j < bars.length; j++) {
+                const b = bars[j];
+                try {
+                    const t = JSON.parse(b.dataset.task);
+                    if (Number(t.id) === reopenTaskId) {
+                        ganttTooltipPinned = true;
+                        ganttTooltipPinnedBar = b;
+                        showTooltip(positionEvent, b);
+                        tooltip.classList.add('tooltip--pinned');
+                        positionTooltip(positionEvent);
+                        break;
+                    }
+                } catch (err2) { /* ignore */ }
+            }
+        }
+    } catch (err) {
+        renderGantt();
+    }
+}
+
+function findGanttMachineRowAt(clientX, clientY) {
+    const tbody = document.querySelector('.gantt-table tbody');
+    if (!tbody) return null;
+    const rows = tbody.querySelectorAll('tr');
+    for (const tr of rows) {
+        const r = tr.getBoundingClientRect();
+        if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return tr;
+    }
+    return null;
+}
+
+function onGanttBarPointerMove(e) {
+    if (!ganttBarDrag || e.pointerId !== ganttBarDrag.pointerId) return;
+    const d = ganttBarDrag;
+    const main = d.main;
+    const dx = e.clientX - d.startClientX + (main.scrollLeft - d.startScrollLeft);
+    const dy = e.clientY - d.startClientY;
+    if (!d.moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+        d.moved = true;
+        d.bar.classList.add('gantt-bar--dragging');
+        document.body.style.userSelect = 'none';
+    }
+    if (d.moved) d.bar.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+
+async function onGanttBarPointerUp(e) {
+    if (!ganttBarDrag || e.pointerId !== ganttBarDrag.pointerId) return;
+    const d = ganttBarDrag;
+    ganttBarDrag = null;
+    document.removeEventListener('pointermove', onGanttBarPointerMove);
+    document.removeEventListener('pointerup', onGanttBarPointerUp);
+    document.removeEventListener('pointercancel', onGanttBarPointerUp);
+    try {
+        d.bar.releasePointerCapture(e.pointerId);
+    } catch (err) { /* ignore */ }
+    d.bar.classList.remove('gantt-bar--dragging');
+    d.bar.style.transform = '';
+    document.body.style.userSelect = '';
+
+    if (!d.moved) return;
+
+    ganttBarSuppressNextDblClick = true;
+    const main = d.main;
+    const totalMs = END_DATE - START_DATE;
+    const timelineWidth = d.td.clientWidth;
+    if (!Number.isFinite(timelineWidth) || timelineWidth <= 0) return;
+
+    const dx = e.clientX - d.startClientX + (main.scrollLeft - d.startScrollLeft);
+    const dropTr = findGanttMachineRowAt(e.clientX, e.clientY);
+    if (!dropTr) return;
+
+    const dropTd = dropTr.querySelector('td:last-child');
+    if (!dropTd) return;
+
+    let newLeft = d.startLeft + dx;
+    const maxL = Math.max(0, dropTd.clientWidth - d.startWidth);
+    newLeft = Math.max(0, Math.min(maxL, newLeft));
+
+    const deltaMs = ((newLeft - d.startLeft) / timelineWidth) * totalMs;
+    const s0 = new Date(d.task.start);
+    const e0 = new Date(d.task.end);
+    const newStart = new Date(s0.getTime() + deltaMs);
+    const newEnd = new Date(e0.getTime() + deltaMs);
+
+    const machineEl = dropTr.querySelector('.gantt-machine-name');
+    const newMachine = machineEl ? String(machineEl.textContent || '').trim() : d.task.machine;
+
+    const startStr = ganttFormatLocalIsoDateTime(newStart);
+    const endStr = ganttFormatLocalIsoDateTime(newEnd);
+    if (!startStr || !endStr) return;
+
+    await persistGanttActualPlanTimesAfterInteraction(
+        d.task.id,
+        startStr,
+        endStr,
+        newMachine || d.task.machine,
+        e,
+    );
+}
+
+function onGanttResizePointerMove(e) {
+    if (!ganttBarResize || e.pointerId !== ganttBarResize.pointerId) return;
+    const d = ganttBarResize;
+    const main = d.main;
+    const dx = e.clientX - d.startClientX + (main.scrollLeft - d.startScrollLeft);
+    const tw = d.td.clientWidth;
+    const minPx = 4;
+    if (!d.moved && Math.abs(dx) > 1) {
+        d.moved = true;
+        d.bar.classList.add('gantt-bar--resizing');
+        document.body.style.userSelect = 'none';
+    }
+    if (d.edge === 'left') {
+        const origRight = d.origLeft + d.origWidth;
+        let newLeft = d.origLeft + dx;
+        let newWidth = origRight - newLeft;
+        if (newWidth < minPx) {
+            newWidth = minPx;
+            newLeft = origRight - minPx;
+        }
+        if (newLeft < 0) {
+            newLeft = 0;
+            newWidth = origRight;
+        }
+        d.bar.style.left = `${newLeft}px`;
+        d.bar.style.width = `${newWidth}px`;
+    } else {
+        let newWidth = d.origWidth + dx;
+        if (newWidth < minPx) newWidth = minPx;
+        const maxW = tw - d.origLeft;
+        if (newWidth > maxW) newWidth = maxW;
+        d.bar.style.width = `${newWidth}px`;
+    }
+}
+
+async function onGanttResizePointerUp(e) {
+    if (!ganttBarResize || e.pointerId !== ganttBarResize.pointerId) return;
+    const d = ganttBarResize;
+    ganttBarResize = null;
+    document.removeEventListener('pointermove', onGanttResizePointerMove);
+    document.removeEventListener('pointerup', onGanttResizePointerUp);
+    document.removeEventListener('pointercancel', onGanttResizePointerUp);
+    try {
+        d.handle.releasePointerCapture(e.pointerId);
+    } catch (err) { /* ignore */ }
+    d.bar.classList.remove('gantt-bar--resizing');
+    document.body.style.userSelect = '';
+
+    if (!d.moved) {
+        d.bar.style.left = `${d.origLeft}px`;
+        d.bar.style.width = `${d.origWidth}px`;
+        return;
+    }
+
+    const tw = d.td.clientWidth;
+    if (!Number.isFinite(tw) || tw <= 0) {
+        renderGantt();
+        return;
+    }
+    const totalMs = END_DATE - START_DATE;
+    const finalLeft = parseFloat(d.bar.style.left) || d.origLeft;
+    const finalWidth = parseFloat(d.bar.style.width) || d.origWidth;
+
+    const origStart = new Date(d.task.start).getTime();
+    const origEnd = new Date(d.task.end).getTime();
+    let newStartMs;
+    let newEndMs;
+    if (d.edge === 'left') {
+        newStartMs = origStart + ((finalLeft - d.origLeft) / tw) * totalMs;
+        newEndMs = origEnd;
+    } else {
+        newStartMs = origStart;
+        newEndMs = origEnd + ((finalWidth - d.origWidth) / tw) * totalMs;
+    }
+    const minDurMs = 60 * 1000;
+    if (newEndMs - newStartMs < minDurMs) {
+        if (d.edge === 'left') newStartMs = newEndMs - minDurMs;
+        else newEndMs = newStartMs + minDurMs;
+    }
+    if (newEndMs <= newStartMs) {
+        renderGantt();
+        return;
+    }
+
+    ganttBarSuppressNextDblClick = true;
+    const startStr = ganttFormatLocalIsoDateTime(new Date(newStartMs));
+    const endStr = ganttFormatLocalIsoDateTime(new Date(newEndMs));
+    if (!startStr || !endStr) {
+        renderGantt();
+        return;
+    }
+
+    await persistGanttActualPlanTimesAfterInteraction(d.task.id, startStr, endStr, d.task.machine, e);
+}
+
+function onGanttResizePointerDown(e) {
+    if (e.button !== 0) return;
+    const handle = e.target.closest('.gantt-bar-resize');
+    if (!handle) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const bar = handle.closest('.gantt-bar');
+    if (!bar) return;
+    let task;
+    try {
+        task = JSON.parse(bar.dataset.task);
+    } catch (err) {
+        return;
+    }
+    if (task.id == null || String(task.id) === '') return;
+
+    const main = document.getElementById('gantt-scroll-main');
+    if (!main) return;
+    const td = bar.closest('td');
+    if (!td) return;
+
+    const origLeft = parseFloat(bar.style.left) || 0;
+    const origWidth = parseFloat(bar.style.width) || 4;
+    const edge = handle.classList.contains('gantt-bar-resize--left') ? 'left' : 'right';
+
+    ganttBarResize = {
+        bar,
+        handle,
+        edge,
+        task,
+        td,
+        main,
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startScrollLeft: main.scrollLeft,
+        origLeft,
+        origWidth,
+        moved: false,
+    };
+    try {
+        handle.setPointerCapture(e.pointerId);
+    } catch (err) { /* ignore */ }
+    document.addEventListener('pointermove', onGanttResizePointerMove);
+    document.addEventListener('pointerup', onGanttResizePointerUp);
+    document.addEventListener('pointercancel', onGanttResizePointerUp);
+}
+
+function onGanttWrapperPointerDown(e) {
+    if (e.target.closest('.gantt-bar-resize')) {
+        onGanttResizePointerDown(e);
+        return;
+    }
+    onGanttBarPointerDown(e);
+}
+
+function onGanttBarPointerDown(e) {
+    if (e.button !== 0) return;
+    const bar = e.target.closest('.gantt-bar');
+    if (!bar) return;
+    if (e.target.closest('.gantt-bar-qty-hit')) return;
+    if (e.target.closest('.gantt-bar-resize')) return;
+    let task;
+    try {
+        task = JSON.parse(bar.dataset.task);
+    } catch (err) {
+        return;
+    }
+    if (task.id == null || String(task.id) === '') return;
+
+    const main = document.getElementById('gantt-scroll-main');
+    if (!main) return;
+    const tr = bar.closest('tr');
+    const td = bar.closest('td');
+    if (!tr || !td) return;
+
+    const startLeft = parseFloat(bar.style.left) || 0;
+    const startWidth = parseFloat(bar.style.width) || 4;
+
+    ganttBarDrag = {
+        bar,
+        task,
+        tr,
+        td,
+        main,
+        pointerId: e.pointerId,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startScrollLeft: main.scrollLeft,
+        startLeft,
+        startWidth,
+        moved: false,
+    };
+    try {
+        bar.setPointerCapture(e.pointerId);
+    } catch (err) { /* ignore */ }
+    document.addEventListener('pointermove', onGanttBarPointerMove);
+    document.addEventListener('pointerup', onGanttBarPointerUp);
+    document.addEventListener('pointercancel', onGanttBarPointerUp);
+}
+
+function ganttBarDblClick(ev, el) {
+    if (ganttBarSuppressNextDblClick) {
+        ganttBarSuppressNextDblClick = false;
+        ev.stopPropagation();
+        ev.preventDefault();
+        return;
+    }
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (ganttTooltipPinned && ganttTooltipPinnedBar === el) {
+        hideTooltip();
+        return;
+    }
+    ganttTooltipPinned = true;
+    ganttTooltipPinnedBar = el;
+    showTooltip(ev, el);
+    tooltip.classList.add('tooltip--pinned');
+    positionTooltip(ev);
+}
+
 function renderGantt() {
+    let preserveScrollLeft = 0;
+    let preserveScrollTop = 0;
+    const existingMain = document.getElementById('gantt-scroll-main');
+    if (existingMain) {
+        preserveScrollLeft = existingMain.scrollLeft;
+        preserveScrollTop = existingMain.scrollTop;
+    }
+
+    if (ganttTooltipPinned) hideTooltip();
     const container = document.getElementById('gantt-root');
+    if (!container) return;
     const totalMs = END_DATE - START_DATE;
 
     // Get unique machines (rows)
@@ -365,7 +1240,7 @@ function renderGantt() {
         const cur = new Date(START_DATE);
         while (cur < END_DATE) {
             slots.push({
-                label: cur.toLocaleDateString('en', {weekday:'short', month:'short', day:'numeric'}),
+                label: formatGanttSlotDayLabel(cur),
                 hours: 24,
                 date: new Date(cur)
             });
@@ -373,20 +1248,54 @@ function renderGantt() {
         }
     }
 
-    const CELL_PX = VIEW === 'daily' ? 60 : 120;
-    const LABEL_W = 180;
+    const z = getGanttZoom();
+    const baseCell = VIEW === 'daily' ? 60 : 120;
+    const CELL_PX = baseCell * z;
+    const ROW_H = 48 * z;
+    const padLabel = Math.round(12 * z);
+    const fsHeader = Math.max(8, Math.round(10 * z));
+    const thPadV = Math.round(8 * z);
+    const thPadH = Math.round(4 * z);
+    const fsMachine = Math.max(9, Math.round(11 * z));
+    const fsSub = Math.max(8, Math.round(9 * z));
+    const fsBar = Math.max(7, Math.round(9 * z));
+    const barInset = 6 * z;
 
-    // Build table HTML
-    let html = '<div class="gantt-scroll-wrap"><div class="gantt-overlay-wrap" style="position:relative;">';
+    const LABEL_HEADER = 'RESOURCE';
+    const countByMachine = {};
+    TASKS.forEach(t => {
+        const k = t.machine;
+        countByMachine[k] = (countByMachine[k] || 0) + 1;
+    });
+    let longestMachineChars = 0;
+    let maxOpsCount = 0;
+    machineSet.forEach(m => {
+        longestMachineChars = Math.max(longestMachineChars, String(m || '').length);
+        maxOpsCount = Math.max(maxOpsCount, countByMachine[m] || 0);
+    });
+    const wHeaderCol = padLabel + Math.ceil(LABEL_HEADER.length * fsHeader * 0.56) + Math.round(14 * z);
+    const wMachineCol = padLabel + Math.ceil(longestMachineChars * fsMachine * 0.58) + Math.round(14 * z);
+    const subChars = Math.max(6, String(maxOpsCount).length + (maxOpsCount === 1 ? 3 : 4));
+    const wSubCol = padLabel + Math.ceil(subChars * fsSub * 0.56) + Math.round(10 * z);
+    const estLabelW = Math.max(wHeaderCol, wMachineCol, wSubCol);
+    const LABEL_MIN = Math.round(56 * z + padLabel);
+    const LABEL_MAX = Math.min(280, Math.round(210 * z));
+    const LABEL_W = Math.round(Math.min(LABEL_MAX, Math.max(LABEL_MIN, estLabelW)));
+    const TIMELINE_W = slots.length * CELL_PX;
+    const GANTT_TABLE_W = LABEL_W + TIMELINE_W;
+
+    // Build table HTML (main = vertical + horizontal scroll; fixed bottom bar mirrors horizontal)
+    let html = '<div class="gantt-viewport-stack"><div class="gantt-scroll-main" id="gantt-scroll-main"><div class="gantt-overlay-wrap" style="position:relative;">';
     html += '<svg class="gantt-links-overlay" id="gantt-links-overlay"></svg>';
-    html += '<table class="gantt-table">';
+    html += `<table class="gantt-table" style="width:${GANTT_TABLE_W}px;min-width:${GANTT_TABLE_W}px;max-width:${GANTT_TABLE_W}px;">`;
 
     // Header row
     html += '<thead><tr>';
-    html += `<th class="gantt-th gantt-header-label" style="text-align:left; padding-left:12px; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-dim);">MACHINE / RESOURCE</th>`;
+    html += `<th class="gantt-th gantt-header-label" style="width:${LABEL_W}px;min-width:${LABEL_W}px;max-width:${LABEL_W}px;text-align:center;vertical-align:middle;padding:${thPadV}px ${thPadH}px;font-size:${fsHeader}px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);">${LABEL_HEADER}</th>`;
     slots.forEach((slot, i) => {
         const isHour = VIEW === 'daily';
-        html += `<th class="gantt-th${isHour && i % 1 === 0 ? ' hour-marker' : ''}" style="width:${CELL_PX}px; min-width:${CELL_PX}px;">${slot.label}</th>`;
+        const thCls = `gantt-th gantt-th--timeline${isHour && i % 1 === 0 ? ' hour-marker' : ''}`;
+        html += `<th class="${thCls}" style="width:${CELL_PX}px;min-width:${CELL_PX}px;font-size:${fsHeader}px;padding:${thPadV}px ${thPadH}px;">${escapeHtml(slot.label)}<span class="gantt-th-resize-handle" role="separator" aria-label="ドラッグでタイムライン全体をズーム" title="ドラッグでチャート全体の列幅（ズーム）を変更"></span></th>`;
     });
     html += '</tr></thead>';
 
@@ -396,14 +1305,16 @@ function renderGantt() {
         const machineTasks = TASKS.filter(t => t.machine === machine);
 
         html += '<tr>';
-        html += `<td class="gantt-label-cell gantt-row-label">
-            <div class="gantt-machine-name" title="${machine}">${machine}</div>
-            <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; color:var(--text-dim); margin-top:2px;">${machineTasks.length} op${machineTasks.length !== 1 ? 's' : ''}</div>
+        html += `<td class="gantt-label-cell gantt-row-label" style="width:${LABEL_W}px;min-width:${LABEL_W}px;max-width:${LABEL_W}px;">
+            <div class="gantt-machine-name" style="font-size:${fsMachine}px;" title="${machine}">${machine}</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:${fsSub}px; color:var(--text-dim); margin-top:2px;">${machineTasks.length} op${machineTasks.length !== 1 ? 's' : ''}</div>
         </td>`;
 
         // Render all time cells as one wide cell with relative positioning
-        const totalWidth = slots.length * CELL_PX;
-        html += `<td colspan="${slots.length}" style="position:relative; height:48px; padding:0; border-bottom:1px solid rgba(30,58,95,0.3);">`;
+        const totalWidth = TIMELINE_W;
+        // 3行ラベル（品目(Group)・Lev・数量）が切れないよう、行の高さをラベルに合わせる
+        const timelineCellH = Math.max(ROW_H, Math.ceil(fsBar * 1.25 * 3 + barInset * 2 + 8));
+        html += `<td colspan="${slots.length}" style="position:relative; min-height:${timelineCellH}px; height:${timelineCellH}px; overflow:visible; padding:0; border-bottom:1px solid rgba(30,58,95,0.3); vertical-align:top;">`;
 
         // Draw vertical grid lines
         // For daily view, show hour/6h grid lines.
@@ -432,49 +1343,65 @@ function renderGantt() {
 
         // Draw bars
         computed.forEach(({ task, s, e, left, width }) => {
-            const itemKey = getItemKey(task);
+            const tBar = resolveTaskForGanttBar(task);
+            const itemKey = getItemKey(tBar);
             const baseColor = itemColorMap[itemKey] || COLORS[0];
-            const sc = getStatusColor(task.status) || baseColor;
+            const sc = getStatusColor(tBar.status) || baseColor;
 
-            const escapedTask = JSON.stringify(task).replace(/'/g, "\\'");
-            const setupMins = Number(task.setup_minutes || 0);
+            const escapedTask = JSON.stringify(tBar).replace(/'/g, "\\'");
+            const setupMins = Number(tBar.setup_minutes || 0);
             const durMins = Math.max(1, (e - s) / 60000);
             const setupRatio = setupMins > 0 ? Math.min(1, setupMins / durMins) : 0;
             const setupPx = setupRatio > 0 ? Math.max(3, Math.floor(width * setupRatio)) : 0;
-            const itemCode = task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
-            const q = task.quantity;
-            const qtyStr = (q === null || q === undefined || q === '') ? '—' : (Number.isFinite(Number(q)) && Number(q) % 1 === 0 ? String(Number(q)) : String(q));
-            const labelHtml = `${escapeHtml(itemCode)}<br>${escapeHtml(qtyStr)}`;
+            const labelHtml = ganttBarLabelMarkup(tBar, fsBar);
+            const dragCls = tBar.id != null && String(tBar.id) !== '' ? ' gantt-bar--draggable' : '';
+            const resizeHandles = ganttBarResizeHandlesMarkup(tBar);
 
-            html += `<div class="gantt-bar"
-                style="left:${left}px; width:${width}px; background:${sc.bg}; border-color:${sc.border};"
-                data-operation-code="${escapeHtml(task.operation_code || task.process_name || '')}"
-                data-next-operation-code="${escapeHtml(task.next_operation_code || '')}"
-                data-operation-id="${escapeHtml(task.operation_id || '')}"
-                data-next-operation-id="${escapeHtml(task.next_operation_id || '')}"
-                data-order-item-code="${escapeHtml(task.order_item_code || '')}"
+            html += `<div class="gantt-bar${dragCls}"
+                data-bar-fs="${fsBar}"
+                style="left:${left}px; width:${width}px; top:${barInset}px; bottom:${barInset}px; background:${sc.bg}; border-color:${sc.border};"
+                data-operation-code="${escapeHtml(tBar.operation_code || tBar.process_name || '')}"
+                data-next-operation-code="${escapeHtml(tBar.next_operation_code || '')}"
+                data-operation-id="${escapeHtml(tBar.operation_id || '')}"
+                data-next-operation-id="${escapeHtml(tBar.next_operation_id || '')}"
+                data-order-item-code="${escapeHtml(tBar.order_item_code || '')}"
                 data-item-key="${escapeHtml(itemKey)}"
                 data-task='${escapedTask}'
-                onmouseenter="showTooltip(event, this)"
-                onmouseleave="hideTooltip()"
+                ondblclick="ganttBarDblClick(event, this)"
             >
                 ${setupPx > 0 ? `<div class="gantt-setup" style="width:${setupPx}px;"></div>` : ''}
-                <span class="gantt-bar-text" style="color:${sc.text};">${labelHtml}</span>
+                ${resizeHandles}
+                ${labelHtml}
             </div>`;
         });
 
         html += '</td></tr>';
     });
 
-    html += '</tbody></table></div></div>';
+    html += '</tbody></table></div></div><div class="gantt-scroll-hbar" id="gantt-scroll-hbar" aria-label="Horizontal timeline scroll" title="タイムラインを左右にスクロール"><div class="gantt-scroll-hbar-inner" id="gantt-scroll-hbar-inner"></div></div></div>';
     container.innerHTML = html;
 
     drawNextOperationLinks();
+    setupGanttSyncedHorizontalBar();
+
+    function restoreGanttScrollPosition() {
+        const main = document.getElementById('gantt-scroll-main');
+        const hbar = document.getElementById('gantt-scroll-hbar');
+        if (!main) return;
+        const maxL = Math.max(0, main.scrollWidth - main.clientWidth);
+        const maxT = Math.max(0, main.scrollHeight - main.clientHeight);
+        main.scrollLeft = Math.min(Math.max(0, preserveScrollLeft), maxL);
+        main.scrollTop = Math.min(Math.max(0, preserveScrollTop), maxT);
+        if (hbar) hbar.scrollLeft = main.scrollLeft;
+    }
+    requestAnimationFrame(() => {
+        requestAnimationFrame(restoreGanttScrollPosition);
+    });
 
     // Now line
     const now = new Date();
     if (now >= START_DATE && now <= END_DATE) {
-        const totalWidth = slots.length * CELL_PX;
+        const totalWidth = TIMELINE_W;
         const pct = (now - START_DATE) / (END_DATE - START_DATE);
         const nowX = LABEL_W + pct * totalWidth;
         const nowLine = document.createElement('div');
@@ -588,6 +1515,221 @@ function drawNextOperationLinks() {
 
 const tooltip = document.getElementById('tooltip');
 
+function scheduleActualQuantityUrl(id) {
+    return `/api/schedules/${id}/actual_quantity`;
+}
+
+function schedulePlanTimesUrl(id) {
+    return `/api/schedules/${id}/plan_times`;
+}
+
+function scheduleClearActualResultsUrl(id) {
+    return `/api/schedules/${id}/clear_actual_results`;
+}
+
+function ganttFormatLocalIsoDateTime(d) {
+    if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return '';
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    const sec = String(d.getSeconds()).padStart(2, '0');
+    return `${y}-${mo}-${da}T${h}:${mi}:${sec}`;
+}
+
+function actualQtyFetchHeaders() {
+    const h = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+    const m = document.querySelector('meta[name="csrf-token"]');
+    if (m) h['X-CSRF-TOKEN'] = m.getAttribute('content');
+    return h;
+}
+
+function scheduleFreezeCutoffUrl() {
+    return '/api/schedules/freeze_cutoff';
+}
+
+async function refreshGanttTasksFromApi() {
+    const navDate = document.getElementById('gantt-nav-date');
+    const dateStr = navDate && navDate.value ? navDate.value : '';
+    const sel = document.getElementById('gantt-machine-select');
+    const machine = sel ? String(sel.value || '') : '';
+    const qs = new URLSearchParams();
+    qs.set('view', VIEW);
+    if (dateStr) qs.set('date', dateStr);
+    if (machine) qs.set('machine', machine);
+    const res = await fetch(`/api/gantt_data?${qs.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data)) throw new Error('Invalid response');
+    TASKS.splice(0, TASKS.length, ...data);
+    renderGantt();
+}
+
+async function onGanttFrozenClick() {
+    const inp = document.getElementById('gantt-frozen-date');
+    const btn = document.getElementById('gantt-frozen-btn');
+    if (!inp || !inp.value) {
+        alert('日付を選択してください。');
+        return;
+    }
+    const cutoff = inp.value;
+    const sel = document.getElementById('gantt-machine-select');
+    const machine = sel ? String(sel.value || '').trim() : '';
+    if (
+        !confirm(
+            `Freeze tasks started on or before ${cutoff} 23:59.\nMissing actual results will be copied from plan values.\nProceed?`
+        )
+    ) {
+        return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+        const body = { cutoff_date: cutoff };
+        if (machine) body.machine = machine;
+        const res = await fetch(scheduleFreezeCutoffUrl(), {
+            method: 'POST',
+            headers: actualQtyFetchHeaders(),
+            body: JSON.stringify(body),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || !out.ok) {
+            alert(out.error || `更新に失敗しました (${res.status})`);
+            return;
+        }
+        await refreshGanttTasksFromApi();
+    } catch (e) {
+        alert('通信エラー: ' + (e && e.message ? e.message : e));
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+function applyActualQuantitySaveResult(sourceBarEl, storedVal) {
+    const t = JSON.parse(sourceBarEl.dataset.task);
+    t.actual_quantity = storedVal;
+    sourceBarEl.setAttribute('data-task', JSON.stringify(t));
+    const fsBar = parseFloat(sourceBarEl.getAttribute('data-bar-fs')) || 9;
+    const setupEl0 = sourceBarEl.querySelector('.gantt-setup');
+    const setupHtml = setupEl0 ? setupEl0.outerHTML : '';
+    sourceBarEl.innerHTML = setupHtml + ganttBarResizeHandlesMarkup(t) + ganttBarLabelMarkup(t, fsBar);
+    sourceBarEl.setAttribute('data-bar-fs', String(fsBar));
+    const tid = t.id;
+    for (let i = 0; i < TASKS.length; i++) {
+        if (Number(TASKS[i].id) === Number(tid)) {
+            TASKS[i].actual_quantity = storedVal;
+            break;
+        }
+    }
+    refreshPinnedTooltipForBar(sourceBarEl);
+}
+
+function ganttBarQtyClick(ev, qtyEl) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (ev.button !== 0) return;
+    const bar = qtyEl.closest('.gantt-bar');
+    if (!bar || bar.querySelector('.gantt-bar-qty-input')) return;
+    let task;
+    try {
+        task = JSON.parse(bar.dataset.task);
+    } catch (e) {
+        return;
+    }
+    if (task.id == null || String(task.id) === '') return;
+
+    const fsBar = parseFloat(bar.getAttribute('data-bar-fs')) || 9;
+    const nA = normalizeGanttActualQuantity(task);
+    const planLbl = formatGanttQtyLabel(task.quantity);
+    const initialDisplay = nA !== null ? formatGanttQtyLabel(nA) : (planLbl !== '—' ? planLbl : '');
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gantt-bar-qty-input';
+    input.setAttribute('aria-label', 'Actual quantity');
+    input.value = initialDisplay === '—' ? '' : initialDisplay;
+    input.style.fontSize = fsBar + 'px';
+
+    function restoreLabelFromBarDataset() {
+        const t0 = JSON.parse(bar.dataset.task);
+        const fs = parseFloat(bar.getAttribute('data-bar-fs')) || 9;
+        const setup = bar.querySelector('.gantt-setup');
+        const sh = setup ? setup.outerHTML : '';
+        bar.innerHTML = sh + ganttBarResizeHandlesMarkup(t0) + ganttBarLabelMarkup(t0, fs);
+        bar.setAttribute('data-bar-fs', String(fs));
+    }
+
+    function removeListeners() {
+        input.removeEventListener('blur', onBlur);
+        input.removeEventListener('keydown', onKey);
+    }
+
+    async function commit() {
+        if (input.dataset.ganttQtyCommitting === '1') return;
+        input.dataset.ganttQtyCommitting = '1';
+        if (!input.isConnected) return;
+        removeListeners();
+        const str = String(input.value ?? '').trim();
+        let bodyVal;
+        if (str === '') {
+            bodyVal = null;
+        } else if (!Number.isFinite(Number(str))) {
+            restoreLabelFromBarDataset();
+            return;
+        } else {
+            bodyVal = Number(str);
+        }
+        const cur = normalizeGanttActualQuantity(JSON.parse(bar.dataset.task));
+        const same =
+            (bodyVal === null && cur === null) ||
+            (bodyVal !== null && cur !== null && Number(bodyVal) === Number(cur));
+        if (same) {
+            restoreLabelFromBarDataset();
+            return;
+        }
+        try {
+            const res = await fetch(scheduleActualQuantityUrl(task.id), {
+                method: 'POST',
+                headers: actualQtyFetchHeaders(),
+                body: JSON.stringify({ actual_quantity: bodyVal }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.ok) {
+                restoreLabelFromBarDataset();
+                return;
+            }
+            applyActualQuantitySaveResult(bar, data.actual_quantity);
+        } catch (err) {
+            restoreLabelFromBarDataset();
+        }
+    }
+
+    function onKey(ev) {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            commit();
+        } else if (ev.key === 'Escape') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            removeListeners();
+            restoreLabelFromBarDataset();
+        }
+    }
+
+    function onBlur() {
+        setTimeout(() => {
+            if (!input.isConnected) return;
+            commit();
+        }, 120);
+    }
+
+    qtyEl.replaceWith(input);
+    input.addEventListener('keydown', onKey);
+    input.addEventListener('blur', onBlur);
+    input.focus();
+    input.select();
+}
+
 function showTooltip(e, el) {
     const task = JSON.parse(el.dataset.task);
     const s = new Date(task.start);
@@ -595,24 +1737,100 @@ function showTooltip(e, el) {
     const dur = Math.round((en - s) / 60000);
     const h = Math.floor(dur / 60), m = dur % 60;
     const durStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
-    const setupMins = Math.round(Number(task.setup_minutes || 0));
-    const setupStr = setupMins > 0 ? (setupMins >= 60 ? `${Math.floor(setupMins/60)}h ${setupMins%60}m` : `${setupMins}m`) : null;
+    const itemLine = escapeHtml(task.item_name || task.item_id || task.operation_out_item || '—');
+    const planStr = escapeHtml(formatGanttQtyLabel(task.quantity));
+    const nAq = normalizeGanttActualQuantity(task);
+    const aqDisplay = nAq !== null ? escapeHtml(formatGanttQtyLabel(nAq)) : '';
+    const aqCls = nAq !== null ? ' tooltip-val--plan-moved' : '';
+    const sid = task.id;
+    const canSave = sid != null && sid !== '';
+    const ps = task.plan_start != null ? String(task.plan_start) : '';
+    const pe = task.plan_end != null ? String(task.plan_end) : '';
+    const pm = task.plan_machine != null ? String(task.plan_machine) : '';
+    const startMoved = ps && String(task.start || '') !== ps;
+    const endMoved = pe && String(task.end || '') !== pe;
+    const resMoved = pm !== '' && String(task.machine || '') !== pm;
+    const startCls = startMoved ? ' tooltip-val--plan-moved' : '';
+    const endCls = endMoved ? ' tooltip-val--plan-moved' : '';
+    const resCls = resMoved ? ' tooltip-val--plan-moved' : '';
 
     tooltip.innerHTML = `
-        <div class="tooltip-title">${task.order_id || 'Operation'}</div>
-        <div class="tooltip-row"><span class="tooltip-label">Machine</span><span class="tooltip-val">${task.machine}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Item</span><span class="tooltip-val">${task.item_name || '—'}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Process</span><span class="tooltip-val">${task.process_name || '—'}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Start</span><span class="tooltip-val">${s.toLocaleString()}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">End</span><span class="tooltip-val">${en.toLocaleString()}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Duration</span><span class="tooltip-val">${durStr}</span></div>
-        ${setupStr ? `<div class="tooltip-row"><span class="tooltip-label">Setup</span><span class="tooltip-val">${setupStr}</span></div>` : ''}
-        ${task.quantity ? `<div class="tooltip-row"><span class="tooltip-label">Qty</span><span class="tooltip-val">${task.quantity}</span></div>` : ''}
-        <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-val">${task.status || '—'}</span></div>
+        <div class="tooltip-pinned-bar">
+            <button type="button" class="btn btn-sm btn-ghost tooltip-unpin-btn" aria-label="Close">&times;</button>
+        </div>
+        <div class="tooltip-row"><span class="tooltip-label">Item</span><span class="tooltip-val">${itemLine}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Group</span><span class="tooltip-val">${escapeHtml(String(task.work_group || '').trim() || '—')}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Min skill</span><span class="tooltip-val">${escapeHtml(String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim() || '—')}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">QC skill</span><span class="tooltip-val">${escapeHtml(String(task.qc_skill != null && task.qc_skill !== '' ? task.qc_skill : '').trim() || '—')}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Resource</span><span class="tooltip-val${resCls}">${escapeHtml(task.machine || '—')}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Start</span><span class="tooltip-val${startCls}">${escapeHtml(s.toLocaleString())}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">End</span><span class="tooltip-val${endCls}">${escapeHtml(en.toLocaleString())}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Duration</span><span class="tooltip-val">${escapeHtml(durStr)}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Plan qty</span><span class="tooltip-val">${planStr}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Result qty</span><span class="tooltip-val${aqCls}">${aqDisplay}</span></div>
+        <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-val">${escapeHtml(task.status || '—')}</span></div>
+        ${
+            canSave
+                ? `<div class="tooltip-row tooltip-row--reset"><button type="button" class="btn btn-sm btn-danger tooltip-result-reset-btn">Result Reset</button></div>`
+                : ''
+        }
     `;
+
+    const resetBtn = tooltip.querySelector('.tooltip-result-reset-btn');
+    if (resetBtn && canSave) {
+        resetBtn.addEventListener('click', async (evt) => {
+            evt.stopPropagation();
+            resetBtn.disabled = true;
+            try {
+                const res = await fetch(scheduleClearActualResultsUrl(sid), {
+                    method: 'POST',
+                    headers: actualQtyFetchHeaders(),
+                    body: '{}',
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) {
+                    resetBtn.disabled = false;
+                    return;
+                }
+                const tidn = Number(sid);
+                for (let i = 0; i < TASKS.length; i++) {
+                    if (Number(TASKS[i].id) !== tidn) continue;
+                    Object.keys(data).forEach((k) => {
+                        if (k === 'ok') return;
+                        TASKS[i][k] = data[k];
+                    });
+                    break;
+                }
+                renderGantt();
+            } catch (err) {
+                resetBtn.disabled = false;
+            }
+        });
+    }
+
+    const ub = tooltip.querySelector('.tooltip-unpin-btn');
+    if (ub) {
+        ub.onclick = (ev) => {
+            ev.stopPropagation();
+            hideTooltip();
+        };
+    }
 
     tooltip.style.display = 'block';
     positionTooltip(e);
+}
+
+function refreshPinnedTooltipForBar(barEl) {
+    if (!ganttTooltipPinned || ganttTooltipPinnedBar !== barEl) return;
+    if (!barEl.isConnected) return;
+    const r = barEl.getBoundingClientRect();
+    const fakeEv = {
+        clientX: Math.min(Math.max(r.left + r.width / 2, 12), window.innerWidth - 12),
+        clientY: Math.min(Math.max(r.top + r.height / 2, 12), window.innerHeight - 12),
+    };
+    showTooltip(fakeEv, barEl);
+    tooltip.classList.add('tooltip--pinned');
+    positionTooltip(fakeEv);
 }
 
 function positionTooltip(e) {
@@ -628,11 +1846,33 @@ function positionTooltip(e) {
 }
 
 function hideTooltip() {
+    ganttTooltipPinned = false;
+    ganttTooltipPinnedBar = null;
+    tooltip.classList.remove('tooltip--pinned');
     tooltip.style.display = 'none';
 }
 
-document.addEventListener('mousemove', (e) => {
-    if (tooltip.style.display !== 'none') positionTooltip(e);
+document.addEventListener('mousedown', (e) => {
+    if (!ganttTooltipPinned || tooltip.style.display === 'none') return;
+    if (e.target.closest('#tooltip')) return;
+    if (e.target.closest('.gantt-bar')) return;
+    hideTooltip();
+}, true);
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && ganttTooltipPinned) hideTooltip();
 });
+
+document.getElementById('gantt-wrapper')?.addEventListener('pointerdown', onGanttWrapperPointerDown);
+document.getElementById('gantt-frozen-btn')?.addEventListener('click', onGanttFrozenClick);
+
+syncGanttZoomLabel();
+document.getElementById('gantt-zoom-in')?.addEventListener('click', () => setGanttZoom(getGanttZoom() + 0.1));
+document.getElementById('gantt-zoom-out')?.addEventListener('click', () => setGanttZoom(getGanttZoom() - 0.1));
+document.getElementById('gantt-zoom-reset')?.addEventListener('click', () => setGanttZoom(1));
+
+if (TASKS.length > 0) {
+    renderGantt();
+}
 </script>
 {% endblock %}

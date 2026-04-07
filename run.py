@@ -62,8 +62,8 @@ def main() -> int:
         "target",
         nargs="?",
         choices=["viewer", "bridge", "all"],
-        default="viewer",
-        help="viewer: in-process Flask (default) | bridge/all: subprocess",
+        default="all",
+        help="all: viewer + bridge (default) | viewer: in-process viewer only | bridge: bridge only",
     )
     parser.add_argument(
         "--host",

@@ -53,7 +53,7 @@
         <input type="hidden" name="view" value="{{ view }}">
         <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
         <select name="machine" onchange="this.form.submit()">
-            <option value="">All Machines</option>
+            <option value="">All resources</option>
             {% for m in machines %}
             <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
             {% endfor %}
@@ -133,6 +133,10 @@
     <div style="color:var(--text-dim); font-size:13px; margin-bottom:24px;">
         Try navigating to a different date or importing schedule data
     </div>
-    <a href="{{ url_for('upload') }}" class="btn btn-primary">Import CSV</a>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center;">
+        <a href="{{ url_for('upload') }}" class="btn btn-primary">Import CSV</a>
+        <a href="{{ url_for('export_schedules_csv') }}" class="btn btn-ghost"
+           data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">Export CSV</a>
+    </div>
 </div>
 {% endif %}

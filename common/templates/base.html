@@ -15,8 +15,7 @@
   <header class="header">
     {% if oracle_connected is defined %}
       <a href="{{ url_for('index') }}" class="logo">
-        <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="ASPROVA">
-        <span>ASPROVA BRIDGE for mcframe</span>
+        <img src="{{ url_for('static', filename='bridge-logo.png') }}" alt="Asprova Data Bridge">
       </a>
       <nav class="nav">
         <button type="button" class="nav-btn" onclick="openConnect()">Connect</button>
@@ -31,8 +30,7 @@
       </div>
     {% else %}
       <a href="/" class="logo">
-        <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="ASPROVA">
-        <span>ASPROVA SCHEDULE VIEWER</span>
+        <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="Asprova Schedule Viewer">
       </a>
       <nav class="nav">
         {# Gantt Chart #}
@@ -54,6 +52,10 @@
         {# Import CSV #}
         <a href="{{ url_for('upload') }}" class="{% if request.endpoint == 'upload' %}active{% endif %}">
           Import CSV
+        </a>
+        <a href="{{ url_for('export_schedules_csv') }}" class="{% if request.endpoint == 'export_schedules_csv' %}active{% endif %}"
+           data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">
+          Export CSV
         </a>
       </nav>
 
@@ -86,7 +88,7 @@
 
   <footer class="footer">
     {% if oracle_connected is defined %}
-      <span class="footer-text">ASPROVA BRIDGE for mcframe v1.0 powered by PT.BAHTERA HISISTEM INDONESIA</span>
+      <span class="footer-text">ASPROVA DATA BRIDGE v1.0 powered by PT.BAHTERA HISISTEM INDONESIA</span>
     {% else %}
       <span class="footer-text">ASPROVA SCHEDULE VIEWER v1.0 powered by PT.BAHTERA HISISTEM INDONESIA</span>
     {% endif %}
@@ -107,6 +109,67 @@
   function openConnect() {
     if (typeof window.__openConnect === 'function') window.__openConnect();
   }
+
+  /** CSV export: confirm → folder picker (File System Access API) → optional overwrite confirm */
+  document.addEventListener('click', async function (ev) {
+    const a = ev.target.closest('[data-export-csv]');
+    if (!a) return;
+    ev.preventDefault();
+    const exportUrl = a.getAttribute('data-export-url') || a.getAttribute('href');
+    const filename = a.getAttribute('data-export-filename') || 'result.csv';
+    if (!exportUrl || exportUrl === '#') return;
+
+    if (!window.showDirectoryPicker) {
+      if (!confirm('お使いのブラウザはフォルダ指定保存に未対応です。通常のダウンロードで続行しますか？')) return;
+      window.location.href = exportUrl;
+      return;
+    }
+
+    let dirHandle;
+    try {
+      dirHandle = await window.showDirectoryPicker();
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      console.error(err);
+      alert('フォルダの選択に失敗しました。');
+      return;
+    }
+
+    let exists = false;
+    try {
+      await dirHandle.getFileHandle(filename);
+      exists = true;
+    } catch (e) {
+      if (e.name !== 'NotFoundError') {
+        console.error(e);
+        alert('フォルダ内のファイル確認に失敗しました。');
+        return;
+      }
+    }
+
+    if (exists && !confirm('同名のファイルがあります。上書きしますか？')) return;
+
+    let blob;
+    try {
+      const res = await fetch(exportUrl);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      blob = await res.blob();
+    } catch (err) {
+      console.error(err);
+      alert('エクスポートデータの取得に失敗しました。');
+      return;
+    }
+
+    try {
+      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    } catch (err) {
+      console.error(err);
+      alert('ファイルの保存に失敗しました。');
+    }
+  });
 </script>
 
 {% block scripts %}{% endblock %}
