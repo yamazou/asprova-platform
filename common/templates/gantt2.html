@@ -483,6 +483,56 @@
     background: var(--surface2);
     color: var(--text);
 }
+
+.gantt-bar-display-menu {
+    position: relative;
+}
+.gantt-bar-display-menu > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+}
+.gantt-bar-display-menu > summary::-webkit-details-marker { display: none; }
+.gantt-bar-display-menu__panel {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 6px;
+    z-index: 40;
+    min-width: 260px;
+    padding: 12px 14px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+}
+.gantt-bar-display-menu__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+.gantt-bar-display-menu__row:last-child { margin-bottom: 0; }
+.gantt-bar-display-menu__row label {
+    flex: 0 0 52px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.gantt-bar-display-menu__select {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-bright);
+}
 </style>
 {% endblock %}
 
@@ -517,6 +567,26 @@
         <button type="button" class="btn btn-sm btn-ghost" id="gantt-zoom-reset" title="Reset zoom">100%</button>
     </div>
 
+    <details class="gantt-bar-display-menu" id="gantt-bar-display-menu">
+        <summary class="btn btn-sm btn-ghost" title="Choose what to show on each line of work bars">Bar lines</summary>
+        <div class="gantt-bar-display-menu__panel" onclick="event.stopPropagation();">
+            <div class="gantt-bar-display-menu__row">
+                <label for="gantt-bar-line-1">Line 1</label>
+                <select id="gantt-bar-line-1" class="gantt-bar-display-menu__select" aria-label="Gantt bar line 1"></select>
+            </div>
+            <div class="gantt-bar-display-menu__row">
+                <label for="gantt-bar-line-2">Line 2</label>
+                <select id="gantt-bar-line-2" class="gantt-bar-display-menu__select" aria-label="Gantt bar line 2"></select>
+            </div>
+            <div class="gantt-bar-display-menu__row">
+                <label for="gantt-bar-line-3">Line 3</label>
+                <select id="gantt-bar-line-3" class="gantt-bar-display-menu__select" aria-label="Gantt bar line 3"></select>
+            </div>
+            <div style="height:1px;background:var(--border);margin:10px 0;"></div>
+            <div id="gantt-tooltip-lines-config"></div>
+        </div>
+    </details>
+
     <div class="gantt-frozen-bar" style="display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap;">
         <label for="gantt-frozen-date" class="gantt-frozen-bar__label" title="締め日（この日の 23:59 までに開始した作業が対象）">Cutoff</label>
         <input type="date" id="gantt-frozen-date" name="gantt_frozen_date" class="gantt-frozen-bar__date"
@@ -535,7 +605,7 @@
     </div>
 </div>
 
-<div class="gantt-container" id="gantt-wrapper" data-asprova-gantt-revision="6">
+<div class="gantt-container" id="gantt-wrapper" data-asprova-gantt-revision="7">
     {% if tasks %}
     <div id="gantt-root"></div>
     {% else %}
@@ -567,6 +637,112 @@ const LEGACY_GANTT_ZOOM_KEY = 'asprovaGanttZoom';
 const LEGACY_PSI_ZOOM_KEY = 'asprovaPsiZoom';
 const VIEW_ZOOM_MIN = 0.5;
 const VIEW_ZOOM_MAX = 5;
+
+/** Gantt work bar: which field to show on lines 1–3 (localStorage) */
+const GANTT_BAR_LINES_KEY = 'asprovaGanttBarLines';
+
+const GANTT_BAR_FIELD_OPTIONS = [
+    { id: 'operation_code', label: 'Work code' },
+    { id: 'item', label: 'Item' },
+    { id: 'item_name', label: 'Item name' },
+    { id: 'quantity', label: 'Quantity' },
+    { id: 'order_id', label: 'Order code' },
+    { id: 'order_item_code', label: 'Order item' },
+    { id: 'delivery_order_no', label: 'Delivery order code' },
+    { id: 'delivery_item', label: 'Delivery item' },
+    { id: 'delivery_item_name', label: 'Delivery item name' },
+    { id: 'delivery_date', label: 'Delivery Date' },
+    { id: 'min_skill', label: 'Min skill' },
+    { id: 'qc_skill', label: 'QC skill' },
+    { id: 'level', label: 'Level (Lev + min skill)' },
+    { id: 'work_group', label: 'Group' },
+    { id: 'status', label: 'Status' },
+    { id: 'machine', label: 'Resource' },
+    { id: 'start', label: 'Start' },
+    { id: 'end', label: 'End' },
+    { id: 'duration', label: 'Duration' },
+    { id: 'plan_quantity', label: 'Plan qty' },
+    { id: 'actual_quantity', label: 'Result qty' },
+];
+
+const GANTT_BAR_FIELD_IDS = new Set(GANTT_BAR_FIELD_OPTIONS.map((o) => o.id));
+const GANTT_BAR_FIELD_LABEL_MAP = Object.fromEntries(GANTT_BAR_FIELD_OPTIONS.map((o) => [o.id, o.label]));
+
+/** Tooltip rows: configurable fields on dbl-click chip */
+const GANTT_TOOLTIP_FIELDS_KEY = 'asprovaGanttTooltipFields';
+const GANTT_TOOLTIP_FIELD_OPTIONS = [
+    { id: 'none', label: '(Empty)' },
+    ...GANTT_BAR_FIELD_OPTIONS.filter((o) => o.id !== 'none'),
+];
+const GANTT_TOOLTIP_FIELD_IDS = new Set(GANTT_TOOLTIP_FIELD_OPTIONS.map((o) => o.id));
+const GANTT_TOOLTIP_FIELD_LABEL_MAP = Object.fromEntries(
+    GANTT_TOOLTIP_FIELD_OPTIONS.map((o) => [o.id, o.label])
+);
+const GANTT_TOOLTIP_LINE_COUNT = 8;
+
+function getGanttBarLineFieldKeys() {
+    const fallback = { line1: 'item', line2: 'level', line3: 'quantity' };
+    try {
+        const raw = localStorage.getItem(GANTT_BAR_LINES_KEY);
+        if (!raw) return fallback;
+        const o = JSON.parse(raw);
+        const pick = (k, d) => (o && GANTT_BAR_FIELD_IDS.has(o[k]) ? o[k] : d);
+        return {
+            line1: pick('line1', fallback.line1),
+            line2: pick('line2', fallback.line2),
+            line3: pick('line3', fallback.line3),
+        };
+    } catch (err) {
+        return fallback;
+    }
+}
+
+function saveGanttBarLineFields(line1, line2, line3) {
+    try {
+        localStorage.setItem(
+            GANTT_BAR_LINES_KEY,
+            JSON.stringify({ line1, line2, line3 }),
+        );
+    } catch (err) { /* ignore */ }
+}
+
+function getGanttTooltipFieldKeys() {
+    const fallback = [
+        'item',
+        'work_group',
+        'min_skill',
+        'qc_skill',
+        'machine',
+        'start',
+        'end',
+        'status',
+    ];
+    try {
+        const raw = localStorage.getItem(GANTT_TOOLTIP_FIELDS_KEY);
+        if (!raw) return fallback;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return fallback;
+        const out = [];
+        for (let i = 0; i < GANTT_TOOLTIP_LINE_COUNT; i++) {
+            const v = arr[i];
+            out.push(GANTT_TOOLTIP_FIELD_IDS.has(v) ? v : fallback[i] || 'none');
+        }
+        return out;
+    } catch (err) {
+        return fallback;
+    }
+}
+
+function saveGanttTooltipFieldKeys(keys) {
+    try {
+        const out = [];
+        for (let i = 0; i < GANTT_TOOLTIP_LINE_COUNT; i++) {
+            const v = keys[i];
+            out.push(GANTT_TOOLTIP_FIELD_IDS.has(v) ? v : 'none');
+        }
+        localStorage.setItem(GANTT_TOOLTIP_FIELDS_KEY, JSON.stringify(out));
+    } catch (err) { /* ignore */ }
+}
 
 function getViewZoom() {
     let v = parseFloat(sessionStorage.getItem(VIEW_ZOOM_KEY), 10);
@@ -755,6 +931,30 @@ function getItemKey(task) {
     return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
 }
 
+/** WorkUser_ResOrder: numeric ascending; empty / non-numeric → last */
+function parseWorkUserResOrder(v) {
+    if (v == null || v === '') return Number.POSITIVE_INFINITY;
+    const n = Number(String(v).trim());
+    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function minWorkUserResOrderForMachine(tasks, machine) {
+    let minV = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < tasks.length; i++) {
+        if (tasks[i].machine !== machine) continue;
+        const x = parseWorkUserResOrder(tasks[i].work_user_res_order);
+        if (x < minV) minV = x;
+    }
+    return minV;
+}
+
+function compareGanttMachinesByResOrderThenName(a, b) {
+    const da = minWorkUserResOrderForMachine(TASKS, a);
+    const db = minWorkUserResOrderForMachine(TASKS, b);
+    if (da !== db) return da - db;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
 function formatGanttQtyLabel(q) {
     if (q === null || q === undefined || q === '') return '—';
     return Number.isFinite(Number(q)) && Number(q) % 1 === 0 ? String(Number(q)) : String(q);
@@ -764,15 +964,13 @@ function ganttBarLabelItemCode(task) {
     return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
 }
 
-/** バー1行目: 品目(Group) — 品目は item 系を優先、Group は work_group */
+/** バー1行目: 品目（item 系を優先）。work_group はバー上では表示しない */
 function ganttBarLabelItemGroupLine(task) {
     const itemDisp = String(task.item_name || task.item_id || task.operation_out_item || '').trim();
     const fallback = String(
         task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || ''
     ).trim();
-    const base = itemDisp || fallback || '—';
-    const grp = String(task.work_group || '').trim();
-    return grp ? `${base}(${grp})` : base;
+    return itemDisp || fallback || '—';
 }
 
 function normalizeGanttActualQuantity(task) {
@@ -817,27 +1015,124 @@ function isGanttBarPlanAdjusted(task) {
     );
 }
 
-function ganttBarLabelMarkup(task, fsBar) {
-    const itemGroupLine = escapeHtml(ganttBarLabelItemGroupLine(task));
-    const nActual = normalizeGanttActualQuantity(task);
-    const itemAdj = isGanttBarPlanAdjusted(task) ? ' gantt-bar-item--adjusted' : '';
-    const line1 = `<span class="gantt-bar-text${itemAdj}" style="font-size:${fsBar}px;">${itemGroupLine}</span>`;
-    const minSk = String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim();
-    const levLabel = minSk ? `Lev${minSk}` : '\u00a0';
-    const line2 = `<span class="gantt-bar-lev" style="font-size:${fsBar}px;">${escapeHtml(levLabel)}</span>`;
-    const canEditQty = task.id != null && String(task.id) !== '';
-    const hitCls = canEditQty ? ' gantt-bar-qty-hit' : '';
-    const hitClick = canEditQty ? ' onclick="ganttBarQtyClick(event, this)"' : '';
-    const hitDblClick = canEditQty ? ' ondblclick="event.stopPropagation()"' : '';
-    const hitTitle = canEditQty ? ' title="Click to edit actual quantity"' : '';
-    let qtyLine;
-    if (nActual !== null) {
-        const lab = escapeHtml(formatGanttQtyLabel(nActual));
-        qtyLine = `<span class="gantt-bar-qty-actual${hitCls}" style="font-size:${fsBar}px;color:#0d47a1;-webkit-text-fill-color:#0d47a1"${hitClick}${hitDblClick}${hitTitle}>${lab}</span>`;
-    } else {
-        qtyLine = `<span class="gantt-bar-text gantt-bar-qty-plan${hitCls}" style="font-size:${fsBar}px;"${hitClick}${hitDblClick}${hitTitle}>${escapeHtml(formatGanttQtyLabel(task.quantity))}</span>`;
+function ganttBarPlainText(task, fieldId) {
+    if (!task || !fieldId || fieldId === 'none') return '';
+    const t = task;
+    const s = (v) => {
+        if (v == null) return '';
+        const x = String(v).trim();
+        return x;
+    };
+    const toMonthDay = (v) => {
+        const raw = s(v);
+        if (!raw) return '';
+        const m = raw.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+        if (m) return `${Number(m[2])}/${Number(m[3])}`;
+        const d = new Date(raw);
+        if (!Number.isNaN(d.getTime())) return `${d.getMonth() + 1}/${d.getDate()}`;
+        return raw;
+    };
+    switch (fieldId) {
+        case 'order_id':
+            return s(t.order_id) || '—';
+        case 'order_item_code':
+            return s(t.order_item_code) || '—';
+        case 'operation_code':
+            return s(t.operation_code) || '—';
+        case 'next_operation_code':
+            return s(t.next_operation_code) || '—';
+        case 'process_name':
+            return s(t.process_name) || '—';
+        case 'machine':
+            return s(t.machine) || '—';
+        case 'status':
+            return s(t.status) || '—';
+        case 'work_group':
+            return s(t.work_group) || '—';
+        case 'min_skill':
+            return s(t.min_skill) || '—';
+        case 'qc_skill':
+            return s(t.qc_skill) || '—';
+        case 'operation_out_item':
+            return s(t.operation_out_item) || '—';
+        case 'item_id':
+            return s(t.item_id) || '—';
+        case 'item_name':
+            return s(t.item_name) || '—';
+        case 'work_user_res_order':
+            return s(t.work_user_res_order) || '—';
+        case 'delivery_order_no':
+            return s(t.delivery_order_no) || '—';
+        case 'delivery_item':
+            return s(t.delivery_item) || '—';
+        case 'delivery_item_name':
+            return s(t.delivery_item_name) || '—';
+        case 'delivery_date':
+            return toMonthDay(t.delivery_date) || '—';
+        case 'start': {
+            const d = new Date(t.start);
+            return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+        }
+        case 'end': {
+            const d = new Date(t.end);
+            return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+        }
+        case 'duration': {
+            const sdt = new Date(t.start);
+            const edt = new Date(t.end);
+            if (Number.isNaN(sdt.getTime()) || Number.isNaN(edt.getTime()) || edt <= sdt) return '—';
+            const dur = Math.round((edt - sdt) / 60000);
+            const h = Math.floor(dur / 60), m = dur % 60;
+            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+        }
+        case 'plan_quantity':
+            return formatGanttQtyLabel(t.quantity);
+        case 'actual_quantity': {
+            const aq = normalizeGanttActualQuantity(t);
+            return aq === null ? '—' : formatGanttQtyLabel(aq);
+        }
+        default:
+            return '—';
     }
-    return `<div class="gantt-bar-inner">${line1}${line2}${qtyLine}</div>`;
+}
+
+function ganttBarLineHtml(task, fsBar, fieldId) {
+    if (!fieldId || fieldId === 'none') {
+        return `<span class="gantt-bar-text" style="font-size:${fsBar}px;">\u00a0</span>`;
+    }
+    if (fieldId === 'item') {
+        const txt = escapeHtml(ganttBarLabelItemGroupLine(task));
+        const itemAdj = isGanttBarPlanAdjusted(task) ? ' gantt-bar-item--adjusted' : '';
+        return `<span class="gantt-bar-text${itemAdj}" style="font-size:${fsBar}px;">${txt}</span>`;
+    }
+    if (fieldId === 'level') {
+        const minSk = String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim();
+        const levLabel = minSk ? `Lev${minSk}` : '\u00a0';
+        return `<span class="gantt-bar-lev" style="font-size:${fsBar}px;">${escapeHtml(levLabel)}</span>`;
+    }
+    if (fieldId === 'quantity') {
+        const nActual = normalizeGanttActualQuantity(task);
+        const canEditQty = task.id != null && String(task.id) !== '';
+        const hitCls = canEditQty ? ' gantt-bar-qty-hit' : '';
+        const hitClick = canEditQty ? ' onclick="ganttBarQtyClick(event, this)"' : '';
+        const hitDblClick = canEditQty ? ' ondblclick="event.stopPropagation()"' : '';
+        const hitTitle = canEditQty ? ' title="Click to edit actual quantity"' : '';
+        if (nActual !== null) {
+            const lab = escapeHtml(formatGanttQtyLabel(nActual));
+            return `<span class="gantt-bar-qty-actual${hitCls}" style="font-size:${fsBar}px;color:#0d47a1;-webkit-text-fill-color:#0d47a1"${hitClick}${hitDblClick}${hitTitle}>${lab}</span>`;
+        }
+        return `<span class="gantt-bar-text gantt-bar-qty-plan${hitCls}" style="font-size:${fsBar}px;"${hitClick}${hitDblClick}${hitTitle}>${escapeHtml(formatGanttQtyLabel(task.quantity))}</span>`;
+    }
+    const plain = escapeHtml(ganttBarPlainText(task, fieldId));
+    return `<span class="gantt-bar-text" style="font-size:${fsBar}px;">${plain}</span>`;
+}
+
+function ganttBarLabelMarkup(task, fsBar) {
+    const cfg = getGanttBarLineFieldKeys();
+    const a = ganttBarLineHtml(task, fsBar, cfg.line1);
+    const b = ganttBarLineHtml(task, fsBar, cfg.line2);
+    const c = ganttBarLineHtml(task, fsBar, cfg.line3);
+    return `<div class="gantt-bar-inner">${a}${b}${c}</div>`;
 }
 
 function ganttBarResizeHandlesMarkup(task) {
@@ -1220,8 +1515,8 @@ function renderGantt() {
     if (!container) return;
     const totalMs = END_DATE - START_DATE;
 
-    // Get unique machines (rows)
-    const machineSet = [...new Set(TASKS.map(t => t.machine))].sort();
+    // Get unique machines (rows): WorkUser_ResOrder asc, then resource name asc
+    const machineSet = [...new Set(TASKS.map(t => t.machine))].sort(compareGanttMachinesByResOrderThenName);
     
     // Color map by item key (consistent across machines)
     const itemSet = [...new Set(TASKS.map(getItemKey))].sort();
@@ -1754,21 +2049,53 @@ function showTooltip(e, el) {
     const endCls = endMoved ? ' tooltip-val--plan-moved' : '';
     const resCls = resMoved ? ' tooltip-val--plan-moved' : '';
 
+    const tooltipCfg = getGanttTooltipFieldKeys();
+    const valueById = {
+        item: itemLine,
+        operation_code: escapeHtml(String(task.operation_code || '').trim() || '—'),
+        item_name: escapeHtml(String(task.item_name || '').trim() || '—'),
+        quantity: planStr,
+        order_id: escapeHtml(String(task.order_id || '').trim() || '—'),
+        order_item_code: escapeHtml(String(task.order_item_code || '').trim() || '—'),
+        delivery_order_no: escapeHtml(String(task.delivery_order_no || '').trim() || '—'),
+        delivery_item: escapeHtml(String(task.delivery_item || '').trim() || '—'),
+        delivery_item_name: escapeHtml(String(task.delivery_item_name || '').trim() || '—'),
+        delivery_date: escapeHtml(ganttBarPlainText(task, 'delivery_date') || '—'),
+        min_skill: escapeHtml(String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim() || '—'),
+        qc_skill: escapeHtml(String(task.qc_skill != null && task.qc_skill !== '' ? task.qc_skill : '').trim() || '—'),
+        level: escapeHtml(
+            String(task.min_skill != null && task.min_skill !== '' ? `Lev${String(task.min_skill).trim()}` : '').trim() || '—'
+        ),
+        work_group: escapeHtml(String(task.work_group || '').trim() || '—'),
+        status: escapeHtml(String(task.status || '').trim() || '—'),
+        machine: escapeHtml(task.machine || '—'),
+        start: escapeHtml(s.toLocaleString()),
+        end: escapeHtml(en.toLocaleString()),
+        duration: escapeHtml(durStr),
+        plan_quantity: planStr,
+        actual_quantity: aqDisplay || '—',
+    };
+    const cssClassById = {
+        machine: resCls,
+        start: startCls,
+        end: endCls,
+        actual_quantity: aqCls,
+    };
+    const tooltipRowsHtml = tooltipCfg
+        .filter((fid) => fid && fid !== 'none')
+        .map((fid) => {
+            const label = GANTT_TOOLTIP_FIELD_LABEL_MAP[fid] || GANTT_BAR_FIELD_LABEL_MAP[fid] || fid;
+            const value = valueById[fid] != null && valueById[fid] !== '' ? valueById[fid] : '—';
+            const cls = cssClassById[fid] || '';
+            return `<div class="tooltip-row"><span class="tooltip-label">${escapeHtml(label)}</span><span class="tooltip-val${cls}">${value}</span></div>`;
+        })
+        .join('');
+
     tooltip.innerHTML = `
         <div class="tooltip-pinned-bar">
             <button type="button" class="btn btn-sm btn-ghost tooltip-unpin-btn" aria-label="Close">&times;</button>
         </div>
-        <div class="tooltip-row"><span class="tooltip-label">Item</span><span class="tooltip-val">${itemLine}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Group</span><span class="tooltip-val">${escapeHtml(String(task.work_group || '').trim() || '—')}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Min skill</span><span class="tooltip-val">${escapeHtml(String(task.min_skill != null && task.min_skill !== '' ? task.min_skill : '').trim() || '—')}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">QC skill</span><span class="tooltip-val">${escapeHtml(String(task.qc_skill != null && task.qc_skill !== '' ? task.qc_skill : '').trim() || '—')}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Resource</span><span class="tooltip-val${resCls}">${escapeHtml(task.machine || '—')}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Start</span><span class="tooltip-val${startCls}">${escapeHtml(s.toLocaleString())}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">End</span><span class="tooltip-val${endCls}">${escapeHtml(en.toLocaleString())}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Duration</span><span class="tooltip-val">${escapeHtml(durStr)}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Plan qty</span><span class="tooltip-val">${planStr}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Result qty</span><span class="tooltip-val${aqCls}">${aqDisplay}</span></div>
-        <div class="tooltip-row"><span class="tooltip-label">Status</span><span class="tooltip-val">${escapeHtml(task.status || '—')}</span></div>
+        ${tooltipRowsHtml}
         ${
             canSave
                 ? `<div class="tooltip-row tooltip-row--reset"><button type="button" class="btn btn-sm btn-danger tooltip-result-reset-btn">Result Reset</button></div>`
@@ -1870,6 +2197,85 @@ syncGanttZoomLabel();
 document.getElementById('gantt-zoom-in')?.addEventListener('click', () => setGanttZoom(getGanttZoom() + 0.1));
 document.getElementById('gantt-zoom-out')?.addEventListener('click', () => setGanttZoom(getGanttZoom() - 0.1));
 document.getElementById('gantt-zoom-reset')?.addEventListener('click', () => setGanttZoom(1));
+
+function initGanttBarLineSelectors() {
+    const ids = ['gantt-bar-line-1', 'gantt-bar-line-2', 'gantt-bar-line-3'];
+    const keys = ['line1', 'line2', 'line3'];
+    const cfg = getGanttBarLineFieldKeys();
+    for (let i = 0; i < 3; i++) {
+        const sel = document.getElementById(ids[i]);
+        if (!sel) continue;
+        sel.innerHTML = '';
+        GANTT_BAR_FIELD_OPTIONS.forEach((opt) => {
+            const o = document.createElement('option');
+            o.value = opt.id;
+            o.textContent = opt.label;
+            sel.appendChild(o);
+        });
+        let v = cfg[keys[i]];
+        if (!GANTT_BAR_FIELD_IDS.has(v)) {
+            v = keys[i] === 'line1' ? 'item' : keys[i] === 'line2' ? 'level' : 'quantity';
+        }
+        sel.value = v;
+    }
+    const onChange = () => {
+        const s1 = document.getElementById('gantt-bar-line-1');
+        const s2 = document.getElementById('gantt-bar-line-2');
+        const s3 = document.getElementById('gantt-bar-line-3');
+        if (!s1 || !s2 || !s3) return;
+        saveGanttBarLineFields(s1.value, s2.value, s3.value);
+        if (TASKS.length > 0) renderGantt();
+    };
+    ids.forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', onChange);
+    });
+}
+
+function initGanttTooltipLineSelectors() {
+    const root = document.getElementById('gantt-tooltip-lines-config');
+    if (!root) return;
+    const cfg = getGanttTooltipFieldKeys();
+    root.innerHTML = '';
+    for (let i = 0; i < GANTT_TOOLTIP_LINE_COUNT; i++) {
+        const row = document.createElement('div');
+        row.className = 'gantt-bar-display-menu__row';
+        const label = document.createElement('label');
+        label.setAttribute('for', `gantt-tooltip-line-${i + 1}`);
+        label.textContent = `Tip ${i + 1}`;
+        const sel = document.createElement('select');
+        sel.id = `gantt-tooltip-line-${i + 1}`;
+        sel.className = 'gantt-bar-display-menu__select';
+        sel.setAttribute('aria-label', `Gantt tooltip line ${i + 1}`);
+        GANTT_TOOLTIP_FIELD_OPTIONS.forEach((opt) => {
+            const o = document.createElement('option');
+            o.value = opt.id;
+            o.textContent = opt.label;
+            sel.appendChild(o);
+        });
+        sel.value = GANTT_TOOLTIP_FIELD_IDS.has(cfg[i]) ? cfg[i] : 'none';
+        sel.addEventListener('change', () => {
+            const keys = [];
+            for (let k = 0; k < GANTT_TOOLTIP_LINE_COUNT; k++) {
+                const cur = document.getElementById(`gantt-tooltip-line-${k + 1}`);
+                keys.push(cur ? cur.value : 'none');
+            }
+            saveGanttTooltipFieldKeys(keys);
+            if (ganttTooltipPinned && ganttTooltipPinnedBar && ganttTooltipPinnedBar.isConnected) {
+                const r = ganttTooltipPinnedBar.getBoundingClientRect();
+                const fakeEv = { clientX: r.left + Math.min(r.width, 20), clientY: r.top + Math.min(r.height, 20) };
+                showTooltip(fakeEv, ganttTooltipPinnedBar);
+                tooltip.classList.add('tooltip--pinned');
+                positionTooltip(fakeEv);
+            }
+        });
+        row.appendChild(label);
+        row.appendChild(sel);
+        root.appendChild(row);
+    }
+}
+
+initGanttBarLineSelectors();
+initGanttTooltipLineSelectors();
 
 if (TASKS.length > 0) {
     renderGantt();

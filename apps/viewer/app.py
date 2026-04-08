@@ -5,6 +5,7 @@ import os
 import io
 from datetime import datetime, timedelta
 import calendar
+import math
 from collections import defaultdict
 import sys
 from pathlib import Path
@@ -143,6 +144,11 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
         'actual_resource': act_res,
         'setup_minutes': r['setup_minutes'],
         'work_group': rd.get('work_group') or '',
+        'work_user_res_order': rd.get('work_user_res_order') or '',
+        'delivery_date': rd.get('delivery_date') or '',
+        'delivery_order_no': rd.get('delivery_order_no') or '',
+        'delivery_item': rd.get('delivery_item') or '',
+        'delivery_item_name': rd.get('delivery_item_name') or '',
         'min_skill': rd.get('min_skill') or '',
         'qc_skill': rd.get('qc_skill') or '',
     }
@@ -151,10 +157,61 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
 def _gantt_range_sql_clause():
     """WHERE fragment: plan window or actual window intersects [start_date, end_date)."""
     return (
-        '(start_time < ? AND end_time > ?) OR '
+        '((start_time < ? AND end_time > ?) OR '
         '(actual_start IS NOT NULL AND actual_end IS NOT NULL '
-        'AND actual_start < ? AND actual_end > ?)'
+        'AND actual_start < ? AND actual_end > ?))'
     )
+
+
+def _parse_work_user_res_order_val(v) -> float:
+    """Numeric sort key for WorkUser_ResOrder; empty / invalid → +inf (sort last)."""
+    if v is None:
+        return float("inf")
+    s = str(v).strip()
+    if not s:
+        return float("inf")
+    try:
+        x = float(s)
+    except ValueError:
+        return float("inf")
+    if not math.isfinite(x):
+        return float("inf")
+    return x
+
+
+def _gantt_machines_sorted_for_dropdown(machine_rows: list, tasks: list) -> list:
+    """
+    Resource list: ascending by min WorkUser_ResOrder among visible tasks for that row's
+    display resource, then by resource name. Machines with no tasks in view sort last (A–Z).
+    """
+    names = sorted(
+        {
+            str(r["machine_name"]).strip()
+            for r in machine_rows
+            if r["machine_name"] is not None and str(r["machine_name"]).strip() != ""
+        }
+    )
+    seen: set[str] = set()
+    from_tasks: list[str] = []
+    for t in tasks:
+        m = t.get("machine")
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        from_tasks.append(m)
+
+    def min_ord(machine: str) -> float:
+        vals = [
+            _parse_work_user_res_order_val(x.get("work_user_res_order"))
+            for x in tasks
+            if x.get("machine") == machine
+        ]
+        return min(vals) if vals else float("inf")
+
+    from_tasks.sort(key=lambda m: (min_ord(m), m))
+    rest = sorted([m for m in names if m not in seen])
+    ordered = from_tasks + rest
+    return [{"machine_name": m} for m in ordered]
 
 
 @app.context_processor
@@ -196,6 +253,11 @@ def init_db():
             actual_end TEXT,
             actual_resource TEXT,
             work_group TEXT,
+            work_user_res_order TEXT,
+            delivery_date TEXT,
+            delivery_order_no TEXT,
+            delivery_item TEXT,
+            delivery_item_name TEXT,
             min_skill TEXT,
             qc_skill TEXT,
             uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -244,6 +306,16 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN actual_resource TEXT")
         if "work_group" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN work_group TEXT")
+        if "work_user_res_order" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN work_user_res_order TEXT")
+        if "delivery_date" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN delivery_date TEXT")
+        if "delivery_order_no" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN delivery_order_no TEXT")
+        if "delivery_item" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN delivery_item TEXT")
+        if "delivery_item_name" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN delivery_item_name TEXT")
         if "min_skill" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN min_skill TEXT")
         if "qc_skill" not in cols:
@@ -322,8 +394,8 @@ def upload():
 
                 conn.execute('''
                     INSERT INTO schedules 
-                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, min_skill, qc_skill)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, work_user_res_order, delivery_date, delivery_order_no, delivery_item, delivery_item_name, min_skill, qc_skill)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     rec['order_id'],
                     rec['order_item_code'],
@@ -346,6 +418,11 @@ def upload():
                     rec.get('actual_end'),
                     rec.get('actual_resource'),
                     rec.get('work_group'),
+                    rec.get('work_user_res_order'),
+                    rec.get('delivery_date'),
+                    rec.get('delivery_order_no'),
+                    rec.get('delivery_item'),
+                    rec.get('delivery_item_name'),
                     rec.get('min_skill'),
                     rec.get('qc_skill'),
                 ))
@@ -417,6 +494,7 @@ def get_schedule_context(view=None, date_str=None, machine_filter=None):
         else:
             date_str = get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
     machine_filter = machine_filter if machine_filter is not None else request.args.get('machine', '')
+    machine_filter = machine_filter.strip() if isinstance(machine_filter, str) else ''
 
     try:
         current_date = datetime.strptime(date_str, '%Y-%m-%d')
@@ -515,7 +593,7 @@ def schedule():
 def gantt():
     # Default to monthly when no view is specified (for header Gantt Chart link)
     view = request.args.get('view', 'monthly')
-    machine_filter = request.args.get('machine', '')
+    machine_filter = (request.args.get('machine', '') or '').strip()
     item_filter = request.args.get('item', '')
     if 'date' in request.args:
         date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
@@ -542,7 +620,7 @@ def gantt():
         end_date = current_date + timedelta(days=1)
 
     conn = get_db()
-    machines = conn.execute(
+    machines_raw = conn.execute(
         '''
         SELECT m AS machine_name FROM (
             SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
@@ -554,6 +632,7 @@ def gantt():
         ORDER BY m
         '''
     ).fetchall()
+    machines = [{"machine_name": r["machine_name"]} for r in machines_raw]
 
     # Distinct order item codes (WorkUser_OrderItem) for dropdown
     order_items = conn.execute(
@@ -571,7 +650,7 @@ def gantt():
     params = [range_end, range_start, range_end, range_start]
 
     if machine_filter:
-        query += ' AND (machine_name = ? OR actual_resource = ?)'
+        query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
         params.extend([machine_filter, machine_filter])
     # item_filter is used only for link highlighting on frontend; keep data set complete
 
@@ -584,6 +663,9 @@ def gantt():
         t = _sched_row_to_gantt_task(r)
         if t:
             tasks.append(t)
+
+    # WorkUser_ResOrder → Resource 名の順（dropdown / 表示と一致）
+    machines = _gantt_machines_sorted_for_dropdown(list(machines_raw), tasks)
 
     if view in ('weekly', '2week', '3week'):
         span_days = {'weekly': 7, '2week': 14, '3week': 21}[view]
@@ -640,7 +722,7 @@ def asprova_viewer_check():
 @app.route('/api/gantt_data')
 def api_gantt_data():
     view = request.args.get('view', 'monthly')
-    machine_filter = request.args.get('machine', '')
+    machine_filter = (request.args.get('machine', '') or '').strip()
     if 'date' in request.args:
         date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
     else:
@@ -671,7 +753,7 @@ def api_gantt_data():
     query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
     params = [range_end, range_start, range_end, range_start]
     if machine_filter:
-        query += ' AND (machine_name = ? OR actual_resource = ?)'
+        query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
         params.extend([machine_filter, machine_filter])
     query += ' ORDER BY machine_name, start_time'
     records = conn.execute(query, params).fetchall()

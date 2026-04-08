@@ -152,6 +152,21 @@ body::before {
   gap: 6px;
 }
 
+/* Bridge: mcframe / SAP logo to the left of the clock (30px to #current-time incl. flex gap) */
+.header-erp-brand {
+  display: flex;
+  align-items: center;
+  margin-left: 2px;
+  margin-right: 24px;
+}
+.header-erp-brand img {
+  height: 28px;
+  width: auto;
+  max-width: 140px;
+  display: block;
+  object-fit: contain;
+}
+
 .status-dot {
   width: 6px;
   height: 6px;
@@ -510,6 +525,11 @@ body::before {
 }
 
 .field input:focus { border-color: rgba(0,212,255,0.5); }
+
+/* Database Connect: space between System dropdown and ID field */
+#connectBackdrop form > .field:first-child {
+  margin-bottom: 20px;
+}
 
 .modal-actions {
   display: flex;

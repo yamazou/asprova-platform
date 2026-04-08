@@ -22,6 +22,15 @@
       </nav>
       <div class="header-status">
         <div class="status-dot" style="background: {{ 'var(--success)' if oracle_connected else 'var(--danger)' }};"></div>
+        {% if oracle_connected and session.get('erp_system') == 'sap_b1' %}
+        <span class="header-erp-brand">
+          <img src="{{ url_for('static', filename='sap-business-one-logo.png') }}" alt="SAP Business One">
+        </span>
+        {% elif oracle_connected %}
+        <span class="header-erp-brand">
+          <img src="{{ url_for('mcframe_logo') }}" alt="mcframe">
+        </span>
+        {% endif %}
         <span id="current-time"></span>
         <span style="margin-left:12px;">
           Status:

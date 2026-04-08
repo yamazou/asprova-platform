@@ -256,6 +256,26 @@ def detect_columns(headers: list[str]) -> Dict[str, str]:
             "グループ",
         )
     )
+    mapping["work_user_res_order"] = find_exact("workuser_resorder") or find_col(
+        "workuser_resorder",
+        "workuser_res_order",
+    )
+    mapping["delivery_date"] = find_exact("workuser_deliverydate") or find_col(
+        "workuser_deliverydate",
+        "workuser_delivery_date",
+    )
+    mapping["delivery_order_no"] = find_exact("workuser_deliveryorderno") or find_col(
+        "workuser_deliveryorderno",
+        "workuser_delivery_order_no",
+    )
+    mapping["delivery_item"] = find_exact("workuser_deliveryitem") or find_col(
+        "workuser_deliveryitem",
+        "workuser_delivery_item",
+    )
+    mapping["delivery_item_name"] = find_exact("workuser_deliveryitemname") or find_col(
+        "workuser_deliveryitemname",
+        "workuser_delivery_item_name",
+    )
     mapping["min_skill"] = find_exact("min skill") or find_col(
         "min_skill",
         "minskill",
@@ -324,6 +344,11 @@ def parse_schedule_upload_row(
     actual_resource = _get_val(mapping, row, "actual_resource")
 
     wg = _get_val(mapping, row, "work_group")
+    wro = _get_val(mapping, row, "work_user_res_order")
+    dd = _get_val(mapping, row, "delivery_date")
+    don = _get_val(mapping, row, "delivery_order_no")
+    di = _get_val(mapping, row, "delivery_item")
+    din = _get_val(mapping, row, "delivery_item_name")
     ms = _get_val(mapping, row, "min_skill")
     qs = _get_val(mapping, row, "qc_skill")
 
@@ -353,6 +378,11 @@ def parse_schedule_upload_row(
         ),
         "actual_resource": actual_resource or None,
         "work_group": wg or None,
+        "work_user_res_order": wro or None,
+        "delivery_date": dd or None,
+        "delivery_order_no": don or None,
+        "delivery_item": di or None,
+        "delivery_item_name": din or None,
         "min_skill": ms or None,
         "qc_skill": qs or None,
     }

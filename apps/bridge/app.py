@@ -1,13 +1,24 @@
 import csv
 import io
+import mimetypes
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 from pathlib import Path
 from jinja2 import ChoiceLoader, FileSystemLoader
 
-from flask import Flask, Response, flash, redirect, render_template, request, send_file, session, url_for
+from flask import (
+    Flask,
+    Response,
+    flash,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 import oracledb
 
 # 古いバージョンの Oracle DB に接続するため、
@@ -31,15 +42,18 @@ app.jinja_loader = ChoiceLoader(
     [FileSystemLoader(str(COMMON_DIR / "templates")), app.jinja_loader]
 )
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "asprova-bridge-dev-secret")
+# ブラウザを閉じても接続フォーム用セッションを残す（デフォルトのセッション Cookie は終了時に消える）
+_bridge_session_days = int(os.environ.get("BRIDGE_SESSION_DAYS", "30"))
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(1, min(_bridge_session_days, 365)))
 
 MCFRAME_LOGO_PATH = os.environ.get(
     "MCFRAME_LOGO_PATH",
-    r"C:\Users\lenovo\.cursor\projects\c-Users-lenovo-asprova-bridge\assets\c__Users_lenovo_AppData_Roaming_Cursor_User_workspaceStorage_bc2da2fe61af596e292be7a2910fd7a2_images_HANA-FIRST-logo_ori-2d4ded98-70e0-42b6-ad82-dadb87d98261.png",
+    str(COMMON_DIR / "static" / "mcframe-logo.webp"),
 )
 
 CONFIRM_LOGO_PATH = os.environ.get(
     "CONFIRM_LOGO_PATH",
-    r"C:\Users\lenovo\.cursor\projects\c-Users-lenovo-asprova-bridge\assets\c__Users_lenovo_AppData_Roaming_Cursor_User_workspaceStorage_bc2da2fe61af596e292be7a2910fd7a2_images_mcframe-logo-b8b12ae0-3865-415a-9a41-0a5440ffc293.png",
+    str(COMMON_DIR / "static" / "mcframe-logo.webp"),
 )
 
 
@@ -208,14 +222,19 @@ def index():
     )
 
 
+def _send_logo_file(path: str) -> Response:
+    mime, _ = mimetypes.guess_type(path)
+    return send_file(path, mimetype=mime or "image/png")
+
+
 @app.route("/assets/mcframe-logo.png", methods=["GET"])
 def mcframe_logo():
-    return send_file(MCFRAME_LOGO_PATH, mimetype="image/png")
+    return _send_logo_file(MCFRAME_LOGO_PATH)
 
 
 @app.route("/assets/confirm-logo.png", methods=["GET"])
 def confirm_logo():
-    return send_file(CONFIRM_LOGO_PATH, mimetype="image/png")
+    return _send_logo_file(CONFIRM_LOGO_PATH)
 
 
 @app.route("/connect", methods=["POST"])
@@ -224,6 +243,8 @@ def connect_oracle():
     oracle_pwd = request.form.get("oracle_pwd", "")
     oracle_schema = request.form.get("oracle_schema", "").strip()
     oracle_dsn = request.form.get("oracle_dsn", "").strip()
+    erp_raw = (request.form.get("erp_system") or "mcframe").strip().lower()
+    erp_system = erp_raw if erp_raw in ("mcframe", "sap_b1") else "mcframe"
     if not oracle_id or not oracle_pwd or not oracle_schema or not oracle_dsn:
         flash("ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name) を入力してください。", "error")
         return redirect(url_for("index"))
@@ -234,14 +255,17 @@ def connect_oracle():
 
     oracle_schema = oracle_schema.upper()
 
-    # ここで初めてOracleに接続し、成功したらセッションに保持
     try:
         conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn=oracle_dsn)
         conn.close()
     except Exception as exc:  # noqa: BLE001
         flash(f"接続に失敗しました: {exc}", "error")
+        session["oracle_connected"] = False
         return redirect(url_for("index"))
 
+    # 接続成功時のみ保持（モーダルは前回成功時の値をデフォルト表示）
+    session.permanent = True
+    session["erp_system"] = erp_system
     session["oracle_user"] = oracle_id
     session["oracle_password"] = oracle_pwd
     session["oracle_schema"] = oracle_schema

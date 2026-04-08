@@ -43,10 +43,7 @@
 
 <div id="confirmBackdrop" class="modal-backdrop" aria-hidden="true">
   <div class="modal">
-    <h2 class="confirm-title">
-      <img src="{{ url_for('confirm_logo') }}" alt="mcframe" class="confirm-logo" />
-      <span>Confirm</span>
-    </h2>
+    <h2>Confirm</h2>
     <div class="hint" id="confirmMessage" style="margin-top:0;"></div>
 
     <div class="hint" style="margin-top:12px;">Save to (optional):</div>
@@ -70,11 +67,16 @@
 
 <div id="connectBackdrop" class="modal-backdrop" aria-hidden="true">
   <div class="modal">
-    <h2 class="confirm-title">
-      <img src="{{ url_for('confirm_logo') }}" alt="mcframe" class="confirm-logo" />
-      <span>Database Connect</span>
-    </h2>
-    <form method="post" action="{{ url_for('connect_oracle') }}">
+    <h2>Database Connect</h2>
+    <form method="post" action="{{ url_for('connect_oracle') }}" autocomplete="off">
+      {% set erp_saved = (session.get('erp_system') or 'mcframe') %}
+      <div class="field">
+        <label for="erp_system">System</label>
+        <select id="erp_system" name="erp_system" required>
+          <option value="mcframe" {% if erp_saved == 'mcframe' %}selected{% endif %}>mcframe</option>
+          <option value="sap_b1" {% if erp_saved == 'sap_b1' %}selected{% endif %}>SAP Business One</option>
+        </select>
+      </div>
       <div class="field">
         <label for="oracle_id">ID</label>
         <input id="oracle_id" name="oracle_id" type="text" value="{{ session.get('oracle_user', '') }}" required />
@@ -85,7 +87,7 @@
       </div>
       <div class="field" style="margin-top:10px;">
         <label for="oracle_schema">SCHEMA(DB Name)</label>
-        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" value="{{ session.get('oracle_schema', '') }}" required />
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
       </div>
       <div class="field" style="margin-top:10px;">
         <label for="oracle_dsn">DNS(Server Name)</label>
