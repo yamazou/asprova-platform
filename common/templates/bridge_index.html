@@ -87,11 +87,11 @@
       </div>
       <div class="field" style="margin-top:10px;">
         <label for="oracle_schema">SCHEMA(DB Name)</label>
-        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="例: demo" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: スキーマ / SAP B1: データベース名" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
       </div>
       <div class="field" style="margin-top:10px;">
         <label for="oracle_dsn">DNS(Server Name)</label>
-        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="例: orcl" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
+        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: サーバー (例 HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" onclick="closeConnect()">Cancel</button>
@@ -139,20 +139,29 @@
 
   function confirmDownload(target) {
     confirmTarget = target;
+    const erp = {{ (erp_system or 'mcframe')|tojson }};
     if (target === 'integrated') {
-      confirmMessage.textContent = 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.';
+      confirmMessage.textContent = erp === 'sap_b1'
+        ? 'Data is retrieved from dbo.OITT_TMP and dbo.ITT1_TMP (SAP B1 / SQL Server).'
+        : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.';
       downloadForm.action = "{{ url_for('download_integrated') }}";
       saveFileName.value = 'integrated_master.csv';
     } else if (target === 'item') {
-      confirmMessage.textContent = 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALLL.';
+      confirmMessage.textContent = erp === 'sap_b1'
+        ? 'Data is retrieved from dbo.OITM_TMP (SAP B1 / SQL Server).'
+        : 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALL.';
       downloadForm.action = "{{ url_for('download_item_table') }}";
       saveFileName.value = 'item_table.csv';
     } else if (target === 'order') {
-      confirmMessage.textContent = 'Data is retrieved from ST_SHOYO_ALL.';
+      confirmMessage.textContent = erp === 'sap_b1'
+        ? 'Data is retrieved from dbo.SHIP_SCH (SAP B1 / SQL Server).'
+        : 'Data is retrieved from ST_SHOYO_ALL.';
       downloadForm.action = "{{ url_for('download_order_table') }}";
       saveFileName.value = 'order_table.csv';
     } else if (target === 'inventory') {
-      confirmMessage.textContent = 'Data is retrieved from ST_GNZAIKO_ALL.';
+      confirmMessage.textContent = erp === 'sap_b1'
+        ? 'Data is retrieved from dbo.BEG_INV (SAP B1 / SQL Server).'
+        : 'Data is retrieved from ST_GNZAIKO_ALL.';
       downloadForm.action = "{{ url_for('download_inventory_table') }}";
       saveFileName.value = 'inventory_table.csv';
     } else if (target === 'resource') {

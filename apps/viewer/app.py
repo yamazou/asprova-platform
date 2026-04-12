@@ -31,6 +31,7 @@ from core.asprova_parser import (
     schedule_row_to_result_csv_cells,
 )
 from core.csv_loader import csv_dict_reader_from_bytes
+from core.sap_integrated_master import ensure_integrates_table
 
 app = Flask(__name__, static_folder=str(COMMON_DIR / "static"))
 app.jinja_loader = ChoiceLoader(
@@ -271,6 +272,7 @@ def init_db():
             uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    ensure_integrates_table(conn)
     conn.commit()
     conn.close()
 
@@ -320,6 +322,7 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN min_skill TEXT")
         if "qc_skill" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN qc_skill TEXT")
+        ensure_integrates_table(conn)
         conn.commit()
     finally:
         conn.close()

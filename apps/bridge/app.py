@@ -36,6 +36,14 @@ COMMON_DIR = PLATFORM_ROOT / "common"
 
 sys.path.insert(0, str(PLATFORM_ROOT))
 from core.csv_loader import rows_to_csv
+from core.sap_integrated_master import (
+    append_supplier_use_lines_after_inputs,
+    fetch_integrated_master_rows_from_sqlserver,
+)
+from core.sap_inventory_table import fetch_inventory_rows_from_sqlserver
+from core.sap_item_table import fetch_item_table_rows_from_sqlserver
+from core.sap_order_table import fetch_order_rows_from_sqlserver
+from core.sqlserver_conn import connect_sqlserver
 
 app = Flask(__name__, static_folder=str(COMMON_DIR / "static"))
 app.jinja_loader = ChoiceLoader(
@@ -86,7 +94,7 @@ SELECT
     'U' AS INST_TYP,
     'M' AS INST_CD,
     hl.LINE_CD AS ITM_RESOURCE,
-    TO_CHAR(hl.STD_LD) || 'sp' AS PRODUCTION
+    TO_CHAR(hl.CYCLE_TIME) || 'mp' AS PRODUCTION
 FROM
     {schema}.SM_HINLINE_ALL hl
 WHERE
@@ -136,7 +144,8 @@ SELECT
     REQ_NO,
     ITM_CD,
     DLV_DT,
-    REQ_QTY
+    REQ_QTY,
+    CAST(NULL AS VARCHAR2(64)) AS CUST_CD
 FROM
     {schema}.ST_SHOYO_ALL
 ORDER BY
@@ -150,6 +159,7 @@ ORDER_TABLE_HEADERS = [
     "ITM_CD",
     "DLV_DT",
     "REQ_QTY",
+    "CUST_CD",
 ]
 
 RESOURCE_TABLE_SQL = """
@@ -188,25 +198,56 @@ INVENTORY_TABLE_HEADERS = [
 
 
 def get_connection():
+    if get_erp_system() == "sap_b1":
+        raise RuntimeError("SAP B1 は SQL Server 接続です。get_sqlserver_connection() を使用してください。")
     user = session.get("oracle_user")
     password = session.get("oracle_password")
     if not (user and password):
-        raise RuntimeError("未接続です。先に「Connect」からOracleへ接続してください。")
+        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
     dsn = session.get("oracle_dsn") or "orcl"
     return oracledb.connect(user=user, password=password, dsn=dsn)
+
+
+def get_sqlserver_connection():
+    """SAP B1: DNS=サーバー名、SCHEMA=データベース名、ID/PASSWORD=SQL 認証。"""
+    if get_erp_system() != "sap_b1":
+        raise RuntimeError("内部エラー: SQL Server 接続は SAP Business One モードのみです。")
+    user = session.get("oracle_user")
+    password = session.get("oracle_password")
+    server = (session.get("oracle_dsn") or "").strip()
+    database = (session.get("oracle_schema") or "").strip()
+    if not (user and password and server and database):
+        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
+    return connect_sqlserver(server, database, user, password, timeout=30)
 
 
 def get_schema() -> str:
     schema = session.get("oracle_schema")
     if not schema:
-        raise RuntimeError("未接続です。先に「Connect」からOracleへ接続してください。")
+        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
     return schema
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,29}$")
+# SAP B1 / SQL Server: database name (SCHEMA 欄に DB 名を入力)
+_SAP_B1_DB_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+
+
+def get_erp_system() -> str:
+    raw = (session.get("erp_system") or "mcframe").strip().lower()
+    return raw if raw in ("mcframe", "sap_b1") else "mcframe"
+
+
+def _sap_b1_not_supported_flash() -> None:
+    flash(
+        "SAP Business One 接続時はこの出力は未対応です（mcframe / Oracle 用のテーブル参照です）。",
+        "error",
+    )
 
 
 def fetch_rows(sql: str):
+    if get_erp_system() == "sap_b1":
+        raise RuntimeError("SAP B1 では Oracle SQL は使用しません。")
     with get_connection() as conn:
         with conn.cursor() as cur:
             schema = get_schema()
@@ -218,7 +259,9 @@ def fetch_rows(sql: str):
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
-        "bridge_index.html", oracle_connected=bool(session.get("oracle_connected"))
+        "bridge_index.html",
+        oracle_connected=bool(session.get("oracle_connected")),
+        erp_system=session.get("erp_system") or "mcframe",
     )
 
 
@@ -249,26 +292,41 @@ def connect_oracle():
         flash("ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name) を入力してください。", "error")
         return redirect(url_for("index"))
 
-    if not _SCHEMA_RE.match(oracle_schema):
-        flash("Schema は英数字とアンダースコアのみ（先頭は英字、最大30文字）で入力してください。", "error")
-        return redirect(url_for("index"))
-
-    oracle_schema = oracle_schema.upper()
-
-    try:
-        conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn=oracle_dsn)
-        conn.close()
-    except Exception as exc:  # noqa: BLE001
-        flash(f"接続に失敗しました: {exc}", "error")
-        session["oracle_connected"] = False
-        return redirect(url_for("index"))
+    if erp_system == "sap_b1":
+        if not _SAP_B1_DB_RE.match(oracle_schema):
+            flash(
+                "データベース名（SCHEMA 欄）は英数字・ドット・ハイフン・アンダースコアのみ、"
+                "1〜128文字で入力してください。",
+                "error",
+            )
+            return redirect(url_for("index"))
+        schema_stored = oracle_schema
+        try:
+            conn = connect_sqlserver(oracle_dsn, schema_stored, oracle_id, oracle_pwd, timeout=15)
+            conn.close()
+        except Exception as exc:  # noqa: BLE001
+            flash(f"接続に失敗しました: {exc}", "error")
+            session["oracle_connected"] = False
+            return redirect(url_for("index"))
+    else:
+        if not _SCHEMA_RE.match(oracle_schema):
+            flash("Schema は英数字とアンダースコアのみ（先頭は英字、最大30文字）で入力してください。", "error")
+            return redirect(url_for("index"))
+        schema_stored = oracle_schema.upper()
+        try:
+            conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn=oracle_dsn)
+            conn.close()
+        except Exception as exc:  # noqa: BLE001
+            flash(f"接続に失敗しました: {exc}", "error")
+            session["oracle_connected"] = False
+            return redirect(url_for("index"))
 
     # 接続成功時のみ保持（モーダルは前回成功時の値をデフォルト表示）
     session.permanent = True
     session["erp_system"] = erp_system
     session["oracle_user"] = oracle_id
     session["oracle_password"] = oracle_pwd
-    session["oracle_schema"] = oracle_schema
+    session["oracle_schema"] = schema_stored
     session["oracle_dsn"] = oracle_dsn
     session["oracle_connected"] = True
     flash("Connection successful.", "success")
@@ -278,8 +336,31 @@ def connect_oracle():
 @app.route("/download/integrated", methods=["POST"])
 def download_integrated():
     try:
-        rows = list(fetch_rows(MASTER_SQL))
-        csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
+        if get_erp_system() == "sap_b1":
+            conn = get_sqlserver_connection()
+            try:
+                recs = fetch_integrated_master_rows_from_sqlserver(conn)
+                rows = [
+                    (
+                        r["P_ITM_CD"],
+                        r["PROCESS_NO"],
+                        r["PROCESS_CD"],
+                        r["INST_TYP"],
+                        r["INST_CD"],
+                        r["ITM_RESOURCE"],
+                        r["PRODUCTION"],
+                    )
+                    for r in recs
+                ]
+                csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
+            finally:
+                conn.close()
+        else:
+            raw_rows = list(fetch_rows(MASTER_SQL))
+            rec_dicts = [dict(zip(INTEGRATED_HEADERS, row)) for row in raw_rows]
+            expanded = append_supplier_use_lines_after_inputs(rec_dicts)
+            rows = [tuple(d[h] for h in INTEGRATED_HEADERS) for d in expanded]
+            csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
     except Exception as exc:  # noqa: BLE001
         flash(f"エラーが発生しました: {exc}", "error")
         return redirect(url_for("index"))
@@ -295,8 +376,16 @@ def download_integrated():
 @app.route("/download/item-table", methods=["POST"])
 def download_item_table():
     try:
-        rows = list(fetch_rows(ITEM_TABLE_SQL))
-        csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
+        if get_erp_system() == "sap_b1":
+            conn = get_sqlserver_connection()
+            try:
+                rows = fetch_item_table_rows_from_sqlserver(conn)
+                csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
+            finally:
+                conn.close()
+        else:
+            rows = list(fetch_rows(ITEM_TABLE_SQL))
+            csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
     except Exception as exc:  # noqa: BLE001
         flash(f"エラーが発生しました: {exc}", "error")
         return redirect(url_for("index"))
@@ -312,8 +401,16 @@ def download_item_table():
 @app.route("/download/order-table", methods=["POST"])
 def download_order_table():
     try:
-        rows = list(fetch_rows(ORDER_TABLE_SQL))
-        csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
+        if get_erp_system() == "sap_b1":
+            conn = get_sqlserver_connection()
+            try:
+                rows = fetch_order_rows_from_sqlserver(conn)
+                csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
+            finally:
+                conn.close()
+        else:
+            rows = list(fetch_rows(ORDER_TABLE_SQL))
+            csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
     except Exception as exc:  # noqa: BLE001
         flash(f"エラーが発生しました: {exc}", "error")
         return redirect(url_for("index"))
@@ -328,6 +425,9 @@ def download_order_table():
 
 @app.route("/download/resource-table", methods=["POST"])
 def download_resource_table():
+    if get_erp_system() == "sap_b1":
+        _sap_b1_not_supported_flash()
+        return redirect(url_for("index"))
     try:
         rows = list(fetch_rows(RESOURCE_TABLE_SQL))
         csv_data = rows_to_csv(rows, RESOURCE_TABLE_HEADERS)
@@ -346,8 +446,16 @@ def download_resource_table():
 @app.route("/download/inventory-table", methods=["POST"])
 def download_inventory_table():
     try:
-        rows = list(fetch_rows(INVENTORY_TABLE_SQL))
-        csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
+        if get_erp_system() == "sap_b1":
+            conn = get_sqlserver_connection()
+            try:
+                rows = fetch_inventory_rows_from_sqlserver(conn)
+                csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
+            finally:
+                conn.close()
+        else:
+            rows = list(fetch_rows(INVENTORY_TABLE_SQL))
+            csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
     except Exception as exc:  # noqa: BLE001
         flash(f"エラーが発生しました: {exc}", "error")
         return redirect(url_for("index"))
