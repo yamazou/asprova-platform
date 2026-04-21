@@ -20,6 +20,10 @@
       <button type="button" class="btn btn-ghost" onclick="confirmDownload('resource')">
         Resource Table
       </button>
+
+      <a href="{{ url_for('resource_cycle_times') }}" class="btn btn-ghost">
+        Line Cycle Time
+      </a>
     </div>
   </div>
 </div>
@@ -89,6 +93,20 @@
         <label for="oracle_schema">SCHEMA(DB Name)</label>
         <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: スキーマ / SAP B1: データベース名" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
       </div>
+      <div class="field" id="mcframe_co_cd_row" style="margin-top:10px;">
+        <label for="mcframe_co_cd">Company CD (CO_CD)</label>
+        <input
+          id="mcframe_co_cd"
+          name="mcframe_co_cd"
+          type="text"
+          inputmode="latin"
+          autocomplete="off"
+          maxlength="20"
+          placeholder="例: J0001（未入力は J0001 または BRIDGE_MCFRAME_CO_CD）"
+          value="{{ session.get('mcframe_co_cd', '') }}"
+        />
+        <div class="hint" style="margin-top:4px;">mcframe / Oracle のみ。半角英数字 1〜20 文字。</div>
+      </div>
       <div class="field" style="margin-top:10px;">
         <label for="oracle_dsn">DNS(Server Name)</label>
         <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: サーバー (例 HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
@@ -114,9 +132,27 @@
   let confirmTarget = null;
   let directoryHandle = null;
 
+  function syncMcframeCoCdRow() {
+    const sel = document.getElementById('erp_system');
+    const row = document.getElementById('mcframe_co_cd_row');
+    const inp = document.getElementById('mcframe_co_cd');
+    if (!sel || !row) return;
+    const sap = sel.value === 'sap_b1';
+    row.style.display = sap ? 'none' : '';
+    row.setAttribute('aria-hidden', sap ? 'true' : 'false');
+    if (inp) {
+      if (sap) inp.setAttribute('disabled', 'disabled');
+      else inp.removeAttribute('disabled');
+    }
+  }
+
+  document.getElementById('erp_system')?.addEventListener('change', syncMcframeCoCdRow);
+  syncMcframeCoCdRow();
+
   window.__openConnect = function () {
     connectBackdrop.classList.add('show');
     connectBackdrop.setAttribute('aria-hidden', 'false');
+    syncMcframeCoCdRow();
     const idEl = document.getElementById('oracle_id');
     if (idEl) idEl.focus();
   };
@@ -186,27 +222,50 @@
       saveFolderLabel.textContent = 'Not supported in this browser';
       return;
     }
-    directoryHandle = await window.showDirectoryPicker();
-    saveFolderLabel.textContent = 'Selected';
+    try {
+      directoryHandle = await window.showDirectoryPicker();
+      saveFolderLabel.textContent = directoryHandle?.name
+        ? `Selected: ${directoryHandle.name}`
+        : 'Selected';
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      directoryHandle = null;
+      saveFolderLabel.textContent = 'Folder select failed';
+    }
+  }
+
+  async function ensureDirectoryWritable(handle) {
+    if (!handle) return false;
+    const opts = { mode: 'readwrite' };
+    if (await handle.queryPermission(opts) === 'granted') return true;
+    return (await handle.requestPermission(opts)) === 'granted';
   }
 
   async function downloadToChosenFolder() {
+    if (!directoryHandle) throw new Error('No folder selected');
+    const writable = await ensureDirectoryWritable(directoryHandle);
+    if (!writable) throw new Error('Folder write permission denied');
+
     const fileName = (saveFileName.value || '').trim() || 'download.csv';
     const resp = await fetch(downloadForm.action, { method: 'POST', credentials: 'same-origin' });
-    if (!resp.ok) throw new Error('Download failed');
+    if (!resp.ok) throw new Error('Download request failed');
     const blob = await resp.blob();
 
     const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-    const writable = await fileHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
+    const stream = await fileHandle.createWritable();
+    await stream.write(blob);
+    await stream.close();
   }
 
   function doConfirm() {
     if (!confirmTarget) return;
     if (directoryHandle && window.showDirectoryPicker) {
       downloadToChosenFolder()
-        .catch(() => downloadForm.submit())
+        .catch((err) => {
+          console.error(err);
+          alert('フォルダ保存に失敗したため、通常ダウンロードに切り替えます。');
+          downloadForm.submit();
+        })
         .finally(() => closeConfirm());
     } else {
       downloadForm.submit();

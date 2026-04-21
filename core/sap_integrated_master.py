@@ -91,11 +91,17 @@ def append_supplier_use_lines_after_inputs(
     records: Sequence[Mapping[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
-    For each INST_TYP=I row, append U/M with P_ITM_CD = that row's ITM_RESOURCE,
-    PROCESS_NO=5, PROCESS_CD='5', INST_TYP='U', INST_CD='M',
+    For each INST_TYP=I row, append U/M with P_ITM_CD = that row's ITM_RESOURCE
+    only when that ITM_RESOURCE does not exist in any original P_ITM_CD.
+    Added rows are: PROCESS_NO=5, PROCESS_CD='5', INST_TYP='U', INST_CD='M',
     ITM_RESOURCE='SUPPLIER', PRODUCTION='0D'.
     """
     out: List[Dict[str, Any]] = []
+    existing_parent_items = {
+        str(r.get("P_ITM_CD") or "").strip()
+        for r in records
+        if str(r.get("P_ITM_CD") or "").strip() != ""
+    }
     for r in records:
         out.append(dict(r))
         inst = str(r.get("INST_TYP") or "").strip().upper()
@@ -103,6 +109,8 @@ def append_supplier_use_lines_after_inputs(
             continue
         comp = r.get("ITM_RESOURCE")
         if comp is None or str(comp).strip() == "":
+            continue
+        if str(comp).strip() in existing_parent_items:
             continue
         out.append(
             {

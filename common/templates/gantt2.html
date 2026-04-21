@@ -665,8 +665,14 @@ const GANTT_BAR_FIELD_OPTIONS = [
     { id: 'actual_quantity', label: 'Result qty' },
 ];
 
-const GANTT_BAR_FIELD_IDS = new Set(GANTT_BAR_FIELD_OPTIONS.map((o) => o.id));
 const GANTT_BAR_FIELD_LABEL_MAP = Object.fromEntries(GANTT_BAR_FIELD_OPTIONS.map((o) => [o.id, o.label]));
+
+/** Bar lines dropdown: real fields plus blank line (id `none`, same as tooltip) */
+const GANTT_BAR_LINE_SELECT_OPTIONS = [
+    { id: 'none', label: '(Empty)' },
+    ...GANTT_BAR_FIELD_OPTIONS,
+];
+const GANTT_BAR_LINE_SELECT_IDS = new Set(GANTT_BAR_LINE_SELECT_OPTIONS.map((o) => o.id));
 
 /** Tooltip rows: configurable fields on dbl-click chip */
 const GANTT_TOOLTIP_FIELDS_KEY = 'asprovaGanttTooltipFields';
@@ -686,7 +692,7 @@ function getGanttBarLineFieldKeys() {
         const raw = localStorage.getItem(GANTT_BAR_LINES_KEY);
         if (!raw) return fallback;
         const o = JSON.parse(raw);
-        const pick = (k, d) => (o && GANTT_BAR_FIELD_IDS.has(o[k]) ? o[k] : d);
+        const pick = (k, d) => (o && GANTT_BAR_LINE_SELECT_IDS.has(o[k]) ? o[k] : d);
         return {
             line1: pick('line1', fallback.line1),
             line2: pick('line2', fallback.line2),
@@ -2206,14 +2212,14 @@ function initGanttBarLineSelectors() {
         const sel = document.getElementById(ids[i]);
         if (!sel) continue;
         sel.innerHTML = '';
-        GANTT_BAR_FIELD_OPTIONS.forEach((opt) => {
+        GANTT_BAR_LINE_SELECT_OPTIONS.forEach((opt) => {
             const o = document.createElement('option');
             o.value = opt.id;
             o.textContent = opt.label;
             sel.appendChild(o);
         });
         let v = cfg[keys[i]];
-        if (!GANTT_BAR_FIELD_IDS.has(v)) {
+        if (!GANTT_BAR_LINE_SELECT_IDS.has(v)) {
             v = keys[i] === 'line1' ? 'item' : keys[i] === 'line2' ? 'level' : 'quantity';
         }
         sel.value = v;

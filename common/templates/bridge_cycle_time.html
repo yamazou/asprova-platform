@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+
+{% block title %}Cycle Time Manager{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Resource Cycle Time</div>
+  </div>
+  <div class="card-body">
+    <form
+      method="post"
+      action="{{ url_for('import_resource_cycle_times') }}"
+      enctype="multipart/form-data"
+      style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;"
+    >
+      <div class="field" style="flex:1 1 420px;">
+        <label for="resource_csv">Import Resource CSV</label>
+        <input id="resource_csv" name="resource_csv" type="file" accept=".csv,text/csv" required />
+      </div>
+      <button type="submit" class="btn btn-primary">Import</button>
+      <a href="{{ url_for('index') }}" class="btn btn-ghost">Back</a>
+    </form>
+
+    {% if source_name %}
+    <div class="hint" style="margin-top:12px;">
+      Current Source CSV: <code>{{ source_name }}</code>
+    </div>
+    {% endif %}
+
+    <div class="hint" style="margin-top:8px;">
+      `LINE_CD` ごとにサイクルタイムを設定します。`CYCLE_TIME` 列が無い CSV の場合は取り込み時に追加されます。
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px;">
+  <div class="card-header">
+    <div class="card-title">Line Code Cycle Time</div>
+  </div>
+  <div class="card-body" style="padding:0;">
+    {% if rows %}
+    <form method="post" action="{{ url_for('save_resource_cycle_times') }}">
+      <div style="max-height:60vh; overflow:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:80px;">No</th>
+              <th style="width:220px;">Line Code</th>
+              <th>Line Name</th>
+              <th style="width:140px;">Sort Order</th>
+              <th style="width:220px;">Cycle Time</th>
+              <th style="width:110px;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              <td class="mono">{{ loop.index }}</td>
+              <td class="mono">{{ row.line_code }}</td>
+              <td>{{ row.line_name }}</td>
+              <td>
+                <input
+                  type="number"
+                  name="sort_order_{{ row.id }}"
+                  value="{{ row.sort_order }}"
+                  step="1"
+                  style="width:100%;"
+                />
+              </td>
+              <td>
+                <input
+                  type="text"
+                  name="cycle_time_{{ row.id }}"
+                  value="{{ row.cycle_time }}"
+                  style="width:100%;"
+                />
+              </td>
+              <td>
+                <button
+                  type="submit"
+                  class="btn btn-danger btn-sm"
+                  formaction="{{ url_for('delete_resource_cycle_time_row') }}"
+                  formmethod="post"
+                  name="row_id"
+                  value="{{ row.id }}"
+                  onclick="return confirm('この行を削除しますか？');"
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-actions" style="padding:14px 18px;">
+        <button type="submit" class="btn btn-primary">Save Cycle Time</button>
+      </div>
+    </form>
+    {% else %}
+    <div style="padding:18px;" class="hint">
+      Resource CSV を Import すると編集テーブルが表示されます。
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div id="connectBackdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal">
+    <h2>Database Connect</h2>
+    <form method="post" action="{{ url_for('connect_oracle') }}" autocomplete="off">
+      {% set erp_saved = (session.get('erp_system') or 'mcframe') %}
+      <div class="field">
+        <label for="erp_system">System</label>
+        <select id="erp_system" name="erp_system" required>
+          <option value="mcframe" {% if erp_saved == 'mcframe' %}selected{% endif %}>mcframe</option>
+          <option value="sap_b1" {% if erp_saved == 'sap_b1' %}selected{% endif %}>SAP Business One</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="oracle_id">ID</label>
+        <input id="oracle_id" name="oracle_id" type="text" value="{{ session.get('oracle_user', '') }}" required />
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_pwd">PASSWORD</label>
+        <input id="oracle_pwd" name="oracle_pwd" type="password" value="{{ session.get('oracle_password', '') }}" required />
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_schema">SCHEMA(DB Name)</label>
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: スキーマ / SAP B1: データベース名" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
+      </div>
+      <div class="field" id="mcframe_co_cd_row" style="margin-top:10px;">
+        <label for="mcframe_co_cd">Company CD (CO_CD)</label>
+        <input
+          id="mcframe_co_cd"
+          name="mcframe_co_cd"
+          type="text"
+          inputmode="latin"
+          autocomplete="off"
+          maxlength="20"
+          placeholder="例: J0001（未入力は J0001 または BRIDGE_MCFRAME_CO_CD）"
+          value="{{ session.get('mcframe_co_cd', '') }}"
+        />
+        <div class="hint" style="margin-top:4px;">mcframe / Oracle のみ。半角英数字 1〜20 文字。</div>
+      </div>
+      <div class="field" style="margin-top:10px;">
+        <label for="oracle_dsn">DNS(Server Name)</label>
+        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: サーバー (例 HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeConnect()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Connect</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const connectBackdrop = document.getElementById('connectBackdrop');
+
+  function syncMcframeCoCdRow() {
+    const sel = document.getElementById('erp_system');
+    const row = document.getElementById('mcframe_co_cd_row');
+    const inp = document.getElementById('mcframe_co_cd');
+    if (!sel || !row) return;
+    const sap = sel.value === 'sap_b1';
+    row.style.display = sap ? 'none' : '';
+    row.setAttribute('aria-hidden', sap ? 'true' : 'false');
+    if (inp) {
+      if (sap) inp.setAttribute('disabled', 'disabled');
+      else inp.removeAttribute('disabled');
+    }
+  }
+
+  document.getElementById('erp_system')?.addEventListener('change', syncMcframeCoCdRow);
+  syncMcframeCoCdRow();
+
+  window.__openConnect = function () {
+    connectBackdrop.classList.add('show');
+    connectBackdrop.setAttribute('aria-hidden', 'false');
+    syncMcframeCoCdRow();
+    const idEl = document.getElementById('oracle_id');
+    if (idEl) idEl.focus();
+  };
+
+  function closeConnect() {
+    connectBackdrop.classList.remove('show');
+    connectBackdrop.setAttribute('aria-hidden', 'true');
+  }
+
+  connectBackdrop.addEventListener('click', (e) => {
+    if (e.target === connectBackdrop) closeConnect();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeConnect();
+  });
+</script>
+{% endblock %}
