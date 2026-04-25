@@ -548,7 +548,9 @@
     <div class="nav-arrows">
         <a href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
         <span class="date-label">
-            {% if view != 'daily' %}
+            {% if view == 'monthly' %}
+                {{ start_date.strftime('%b %Y') }}
+            {% elif view != 'daily' %}
                 {{ start_date.strftime('%b %d') }} – {{ end_date.strftime('%b %d') }}
             {% else %}
                 {{ current_date.strftime('%Y-%m-%d') }}
@@ -556,8 +558,6 @@
         </span>
         <a href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
     </div>
-
-    <a href="?view={{ view }}&date=&machine={{ machine_filter }}" class="btn btn-primary btn-sm">Today</a>
 
     <div class="view-zoom-bar" aria-label="Chart zoom">
         <span class="view-zoom-bar__label">Zoom</span>
@@ -933,8 +933,8 @@ function formatGanttSlotDayLabel(d) {
 }
 
 function getItemKey(task) {
-    // Color by order item code (preferred), not by machine.
-    return task.order_item_code || task.process_name || task.order_id || task.item_id || task.item_name || '—';
+    // Color by Item_id first.
+    return task.item_id || task.order_item_code || task.item_name || task.process_name || task.order_id || '—';
 }
 
 /** WorkUser_ResOrder: numeric ascending; empty / non-numeric → last */

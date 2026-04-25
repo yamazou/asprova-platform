@@ -26,15 +26,20 @@
         <span class="header-erp-brand">
           <img src="{{ url_for('static', filename='sap-business-one-logo.png') }}" alt="SAP Business One">
         </span>
-        {% elif oracle_connected %}
+        {% elif oracle_connected and session.get('erp_system') == 'mcframe' %}
         <span class="header-erp-brand">
           <img src="{{ url_for('mcframe_logo') }}" alt="mcframe">
         </span>
         {% endif %}
-        <span id="current-time"></span>
         <span style="margin-left:12px;">
           Status:
-          <span id="conn-status">{{ 'CONNECTED' if oracle_connected else 'DISCONNECTED' }}</span>
+          <span id="conn-status">
+            {% if oracle_connected %}
+              CONNECTED{% if session.get('customer_id') %} with {{ session.get('customer_id')|upper }}{% endif %}
+            {% else %}
+              DISCONNECTED
+            {% endif %}
+          </span>
         </span>
       </div>
     {% else %}
@@ -42,6 +47,7 @@
         <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="Asprova Schedule Viewer">
       </a>
       <nav class="nav">
+        <button type="button" class="nav-btn" onclick="openConnect()">Connect</button>
         {# Gantt Chart #}
         {% if request.endpoint == 'gantt' and current_date is defined and view is defined %}
           <a href="{{ url_for('gantt', date=current_date.strftime('%Y-%m-%d'), view=view, machine=machine_filter|default('')) }}" class="active">
@@ -54,8 +60,13 @@
         {% endif %}
 
         {# PSI Viewer #}
+        {% if viewer_selected_customer_id != 'peb' %}
         <a href="{{ url_for('psi_view') }}" class="{% if request.endpoint == 'psi_view' %}active{% endif %}">
           PSI Viewer
+        </a>
+        {% endif %}
+        <a href="{{ url_for('monthly_result_view') }}" class="{% if request.endpoint == 'monthly_result_view' %}active{% endif %}">
+          Monthly Result
         </a>
 
         {# Import CSV #}
@@ -76,7 +87,16 @@
 
       <div class="header-status">
         <div class="status-dot"></div>
-        <span id="current-time"></span>
+        <span style="margin-left:12px;">
+          Status:
+          <span>
+            {% if viewer_customer_connected %}
+              CONNECTED with {{ viewer_selected_customer_id|upper }}
+            {% else %}
+              DISCONNECTED
+            {% endif %}
+          </span>
+        </span>
       </div>
     {% endif %}
   </header>
@@ -104,20 +124,62 @@
   </footer>
 </div>
 
-<script>
-  function updateTime() {
-    const now = new Date();
-    const el = document.getElementById('current-time');
-    if (!el) return;
-    el.textContent = now.toLocaleString('en-GB', {hour12: false}).replace(',', '');
-  }
-  updateTime();
-  setInterval(updateTime, 1000);
+{% if oracle_connected is not defined %}
+<div id="viewerConnectBackdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal">
+    <h2>Viewer Connect</h2>
+    <form method="post" action="{{ url_for('viewer_connect') }}">
+      <div class="field">
+        <label for="viewer_customer_id">Customer</label>
+        <select id="viewer_customer_id" name="customer_id">
+          <option value="">Manual</option>
+          {% for c in viewer_customer_profiles %}
+          <option value="{{ c.id }}" {% if viewer_selected_customer_id == c.id %}selected{% endif %}>{{ c.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeViewerConnect()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Connect</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
 
+<script>
   // Used only on bridge pages (header "Connect" button).
   function openConnect() {
-    if (typeof window.__openConnect === 'function') window.__openConnect();
+    if (typeof window.__openConnect === 'function') {
+      window.__openConnect();
+      return;
+    }
+    if (typeof window.__openViewerConnect === 'function') window.__openViewerConnect();
   }
+
+  {% if oracle_connected is not defined %}
+  const viewerConnectBackdrop = document.getElementById('viewerConnectBackdrop');
+  window.__openViewerConnect = function () {
+    if (!viewerConnectBackdrop) return;
+    viewerConnectBackdrop.classList.add('show');
+    viewerConnectBackdrop.setAttribute('aria-hidden', 'false');
+    const el = document.getElementById('viewer_customer_id');
+    if (el) el.focus();
+  };
+  function closeViewerConnect() {
+    if (!viewerConnectBackdrop) return;
+    viewerConnectBackdrop.classList.remove('show');
+    viewerConnectBackdrop.setAttribute('aria-hidden', 'true');
+  }
+  if (viewerConnectBackdrop) {
+    viewerConnectBackdrop.addEventListener('click', (e) => {
+      if (e.target === viewerConnectBackdrop) closeViewerConnect();
+    });
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeViewerConnect();
+  });
+  {% endif %}
 
   /** CSV export: confirm → folder picker (File System Access API) → optional overwrite confirm */
   document.addEventListener('click', async function (ev) {

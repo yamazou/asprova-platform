@@ -21,8 +21,8 @@
         Resource Table
       </button>
 
-      <a href="{{ url_for('resource_cycle_times') }}" class="btn btn-ghost">
-        Line Cycle Time
+      <a href="{{ url_for('index', show_line_cycle='1') }}" class="btn btn-ghost">
+        Line Cycle Time master
       </a>
     </div>
   </div>
@@ -35,20 +35,152 @@
   <div class="card-body">
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <button type="button" class="btn btn-ghost" onclick="confirmDownload('order')">
-        Order
+        {% if selected_customer_id == 'peb' %}Shipping{% else %}Order{% endif %}
       </button>
+      {% if selected_customer_id == 'peb' %}
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('prd_plan')">
+        Prd Plan
+      </button>
+      {% endif %}
 
       <button type="button" class="btn btn-ghost" onclick="confirmDownload('inventory')">
-        Inventory
+        {% if selected_customer_id == 'peb' %}Inv. FG{% else %}Inventory{% endif %}
       </button>
+
+      {% if selected_customer_id == 'peb' %}
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('inventory_wip')">
+        Inv. WIP
+      </button>
+      {% endif %}
+
     </div>
   </div>
 </div>
+
+{% if show_line_cycle_master %}
+<div class="card" id="line-cycle-time-master" style="margin-top:18px;">
+  <div class="card-header">
+    <div class="card-title">Line Cycle Time master</div>
+  </div>
+  <div class="card-body" style="padding:0;">
+    {% if line_cycle_rows %}
+    <form method="post" action="{{ url_for('save_resource_cycle_times') }}">
+      <div style="max-height:60vh; overflow:auto;">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:80px;">No</th>
+              <th style="width:220px;">Line Code</th>
+              <th>Line Name</th>
+              <th style="width:140px;">Sort Order</th>
+              <th style="width:220px;">Cycle Time</th>
+              <th style="width:110px;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in line_cycle_rows %}
+            <tr>
+              <td class="mono">{{ loop.index }}</td>
+              <td class="mono">{{ row.line_code }}</td>
+              <td>{{ row.line_name }}</td>
+              <td>
+                <input type="number" name="sort_order_{{ row.id }}" value="{{ row.sort_order }}" step="1" style="width:100%;" />
+              </td>
+              <td>
+                <input type="text" name="cycle_time_{{ row.id }}" value="{{ row.cycle_time }}" style="width:100%;" />
+              </td>
+              <td>
+                <button
+                  type="submit"
+                  class="btn btn-danger btn-sm"
+                  formaction="{{ url_for('delete_resource_cycle_time_row') }}"
+                  formmethod="post"
+                  name="row_id"
+                  value="{{ row.id }}"
+                  onclick="return confirm('この行を削除しますか？');"
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-actions" style="padding:14px 18px;">
+        <button type="submit" class="btn btn-primary">Save Cycle Time</button>
+      </div>
+    </form>
+    {% else %}
+    <div style="padding:18px;" class="hint">
+      Line Cycle Time データがありません。
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if show_monthly_result %}
+<div class="card" id="monthly-result-card" style="margin-top:18px;">
+  <div class="card-header">
+    <div class="card-title">Monthly Result</div>
+  </div>
+  <div class="card-body">
+    <form
+      method="post"
+      action="{{ url_for('monthly_result') }}"
+      enctype="multipart/form-data"
+      style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;"
+    >
+      <div class="field" style="flex:1 1 420px;">
+        <label for="monthlyResultExcel">Source Excel</label>
+        <input id="monthlyResultExcel" name="monthly_result_excel" type="file" accept=".xlsx,.xlsm" required />
+      </div>
+      <button type="submit" class="btn btn-primary">Show</button>
+    </form>
+    {% if monthly_result_source_name %}
+    <div class="hint" style="margin-top:10px;">
+      Source: <code>{{ monthly_result_source_name }}</code>
+    </div>
+    {% endif %}
+  </div>
+  {% if monthly_result_rows %}
+  <div class="card-body" style="padding:0;">
+    <div style="max-height:55vh; overflow:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th style="width:80px;">No</th>
+            <th>Line</th>
+            <th style="width:220px;">Production Qty</th>
+            <th style="width:220px;">Working Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in monthly_result_rows %}
+          <tr>
+            <td class="mono">{{ loop.index }}</td>
+            <td>{{ row.line_name }}</td>
+            <td class="mono">{{ row.production_qty }}</td>
+            <td class="mono">{{ row.working_hours }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
 
 <div id="confirmBackdrop" class="modal-backdrop" aria-hidden="true">
   <div class="modal">
     <h2>Confirm</h2>
     <div class="hint" id="confirmMessage" style="margin-top:0;"></div>
+    <div id="excelSourceRow" class="field" style="margin-top:12px; display:none;">
+      <label for="excelSourceFile">Source Excel/CSV</label>
+      <input id="excelSourceFile" type="file" accept=".xlsx,.xlsm,.csv,text/csv" />
+    </div>
 
     <div class="hint" style="margin-top:12px;">Save to (optional):</div>
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
@@ -73,23 +205,33 @@
   <div class="modal">
     <h2>Database Connect</h2>
     <form method="post" action="{{ url_for('connect_oracle') }}" autocomplete="off">
+      <div class="field">
+        <label for="customer_id">Customer</label>
+        <select id="customer_id" name="customer_id">
+          <option value="">Manual</option>
+          {% for c in customer_profiles %}
+          <option value="{{ c.id }}" {% if selected_customer_id == c.id %}selected{% endif %}>{{ c.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
       {% set erp_saved = (session.get('erp_system') or 'mcframe') %}
       <div class="field">
         <label for="erp_system">System</label>
         <select id="erp_system" name="erp_system" required>
           <option value="mcframe" {% if erp_saved == 'mcframe' %}selected{% endif %}>mcframe</option>
           <option value="sap_b1" {% if erp_saved == 'sap_b1' %}selected{% endif %}>SAP Business One</option>
+          <option value="excel" {% if erp_saved == 'excel' %}selected{% endif %}>Excel</option>
         </select>
       </div>
-      <div class="field">
+      <div class="field" id="oracle_id_row">
         <label for="oracle_id">ID</label>
         <input id="oracle_id" name="oracle_id" type="text" value="{{ session.get('oracle_user', '') }}" required />
       </div>
-      <div class="field" style="margin-top:10px;">
+      <div class="field" id="oracle_pwd_row" style="margin-top:10px;">
         <label for="oracle_pwd">PASSWORD</label>
         <input id="oracle_pwd" name="oracle_pwd" type="password" value="{{ session.get('oracle_password', '') }}" required />
       </div>
-      <div class="field" style="margin-top:10px;">
+      <div class="field" id="oracle_schema_row" style="margin-top:10px;">
         <label for="oracle_schema">SCHEMA(DB Name)</label>
         <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: スキーマ / SAP B1: データベース名" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
       </div>
@@ -107,7 +249,7 @@
         />
         <div class="hint" style="margin-top:4px;">mcframe / Oracle のみ。半角英数字 1〜20 文字。</div>
       </div>
-      <div class="field" style="margin-top:10px;">
+      <div class="field" id="oracle_dsn_row" style="margin-top:10px;">
         <label for="oracle_dsn">DNS(Server Name)</label>
         <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: サーバー (例 HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
       </div>
@@ -128,6 +270,13 @@
   const downloadForm = document.getElementById('downloadForm');
   const saveFolderLabel = document.getElementById('saveFolderLabel');
   const saveFileName = document.getElementById('saveFileName');
+  const excelSourceRow = document.getElementById('excelSourceRow');
+  const excelSourceLabel = document.querySelector('label[for="excelSourceFile"]');
+  const excelSourceFile = document.getElementById('excelSourceFile');
+  const lineCycleTimeMasterCard = document.getElementById('line-cycle-time-master');
+  const monthlyResultCard = document.getElementById('monthly-result-card');
+  const customerProfiles = {{ customer_profiles|tojson }};
+  const erp = {{ (erp_system or 'mcframe')|tojson }};
 
   let confirmTarget = null;
   let directoryHandle = null;
@@ -136,12 +285,31 @@
     const sel = document.getElementById('erp_system');
     const row = document.getElementById('mcframe_co_cd_row');
     const inp = document.getElementById('mcframe_co_cd');
+    const idRow = document.getElementById('oracle_id_row');
+    const pwdRow = document.getElementById('oracle_pwd_row');
+    const schemaRow = document.getElementById('oracle_schema_row');
+    const dsnRow = document.getElementById('oracle_dsn_row');
+    const idInp = document.getElementById('oracle_id');
+    const pwdInp = document.getElementById('oracle_pwd');
+    const schemaInp = document.getElementById('oracle_schema');
+    const dsnInp = document.getElementById('oracle_dsn');
     if (!sel || !row) return;
     const sap = sel.value === 'sap_b1';
+    const excel = sel.value === 'excel';
     row.style.display = sap ? 'none' : '';
     row.setAttribute('aria-hidden', sap ? 'true' : 'false');
+    [idRow, pwdRow, schemaRow, dsnRow].forEach((el) => {
+      if (!el) return;
+      el.style.display = excel ? 'none' : '';
+      el.setAttribute('aria-hidden', excel ? 'true' : 'false');
+    });
+    [idInp, pwdInp, schemaInp, dsnInp].forEach((el) => {
+      if (!el) return;
+      if (excel) el.removeAttribute('required');
+      else el.setAttribute('required', 'required');
+    });
     if (inp) {
-      if (sap) inp.setAttribute('disabled', 'disabled');
+      if (sap || excel) inp.setAttribute('disabled', 'disabled');
       else inp.removeAttribute('disabled');
     }
   }
@@ -149,9 +317,37 @@
   document.getElementById('erp_system')?.addEventListener('change', syncMcframeCoCdRow);
   syncMcframeCoCdRow();
 
+  function profileById(id) {
+    return customerProfiles.find((p) => p.id === id) || null;
+  }
+
+  function applyCustomerProfile(force = false) {
+    const customerSel = document.getElementById('customer_id');
+    if (!customerSel) return;
+    const profile = profileById(customerSel.value);
+    if (!profile) return;
+    const erpSel = document.getElementById('erp_system');
+    const idEl = document.getElementById('oracle_id');
+    const pwdEl = document.getElementById('oracle_pwd');
+    const schemaEl = document.getElementById('oracle_schema');
+    const dsnEl = document.getElementById('oracle_dsn');
+    const coCdEl = document.getElementById('mcframe_co_cd');
+    if (erpSel && profile.erp_system) erpSel.value = profile.erp_system;
+    if (idEl && profile.oracle_id && (force || !idEl.value.trim())) idEl.value = profile.oracle_id;
+    if (pwdEl && profile.oracle_pwd && (force || !pwdEl.value.trim())) pwdEl.value = profile.oracle_pwd;
+    if (schemaEl && profile.oracle_schema && (force || !schemaEl.value.trim())) schemaEl.value = profile.oracle_schema;
+    if (dsnEl && profile.oracle_dsn && (force || !dsnEl.value.trim())) dsnEl.value = profile.oracle_dsn;
+    if (coCdEl && profile.mcframe_co_cd && (force || !coCdEl.value.trim())) coCdEl.value = profile.mcframe_co_cd;
+    syncMcframeCoCdRow();
+  }
+
+  document.getElementById('customer_id')?.addEventListener('change', () => applyCustomerProfile(true));
+  applyCustomerProfile(false);
+
   window.__openConnect = function () {
     connectBackdrop.classList.add('show');
     connectBackdrop.setAttribute('aria-hidden', 'false');
+    applyCustomerProfile(false);
     syncMcframeCoCdRow();
     const idEl = document.getElementById('oracle_id');
     if (idEl) idEl.focus();
@@ -174,34 +370,64 @@
   });
 
   function confirmDownload(target) {
+    if (lineCycleTimeMasterCard) lineCycleTimeMasterCard.style.display = 'none';
+    if (monthlyResultCard) monthlyResultCard.style.display = 'none';
     confirmTarget = target;
-    const erp = {{ (erp_system or 'mcframe')|tojson }};
+    if (excelSourceFile) excelSourceFile.value = '';
+    if (excelSourceRow) excelSourceRow.style.display = erp === 'excel' ? '' : 'none';
+    if (excelSourceLabel) excelSourceLabel.textContent = 'Source Excel/CSV';
     if (target === 'integrated') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.OITT_TMP and dbo.ITT1_TMP (SAP B1 / SQL Server).'
-        : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.';
+        : (erp === 'excel'
+          ? 'Data is retrieved from selected source Excel/CSV.'
+          : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.');
       downloadForm.action = "{{ url_for('download_integrated') }}";
       saveFileName.value = 'integrated_master.csv';
     } else if (target === 'item') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.OITM_TMP (SAP B1 / SQL Server).'
-        : 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALL.';
+        : (erp === 'excel'
+          ? 'Data is retrieved from selected source Excel/CSV.'
+          : 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALL.');
       downloadForm.action = "{{ url_for('download_item_table') }}";
       saveFileName.value = 'item_table.csv';
     } else if (target === 'order') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.SHIP_SCH (SAP B1 / SQL Server).'
-        : 'Data is retrieved from ST_SHOYO_ALL.';
+        : (erp === 'excel'
+          ? 'Data is retrieved from the "Shipment Plan" worksheet in the selected Excel file.'
+          : 'Data is retrieved from ST_SHOYO_ALL.');
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
       downloadForm.action = "{{ url_for('download_order_table') }}";
       saveFileName.value = 'order_table.csv';
+    } else if (target === 'prd_plan') {
+      confirmMessage.textContent = erp === 'excel'
+        ? 'Data is retrieved from the "ProductionPlan" worksheet in the selected Excel file.'
+        : 'Prd Plan is supported only for Excel source.';
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
+      downloadForm.action = "{{ url_for('download_prd_plan_table') }}";
+      saveFileName.value = 'prd_plan_table.csv';
     } else if (target === 'inventory') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.BEG_INV (SAP B1 / SQL Server).'
-        : 'Data is retrieved from ST_GNZAIKO_ALL.';
+        : (erp === 'excel'
+          ? 'Data is retrieved from the "FG stock" worksheet in the selected Excel file.'
+          : 'Data is retrieved from ST_GNZAIKO_ALL.');
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
       downloadForm.action = "{{ url_for('download_inventory_table') }}";
       saveFileName.value = 'inventory_table.csv';
+    } else if (target === 'inventory_wip') {
+      confirmMessage.textContent = erp === 'excel'
+        ? 'Data is retrieved from the worksheet starting with "Stock_list_" in the selected Excel file.'
+        : 'Inv. WIP is supported only for Excel source.';
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
+      downloadForm.action = "{{ url_for('download_inventory_wip_table') }}";
+      saveFileName.value = 'inventory_wip_table.csv';
     } else if (target === 'resource') {
-      confirmMessage.textContent = 'Data is retrieved from SM_LINE_ALL.';
+      confirmMessage.textContent = erp === 'excel'
+        ? 'Data is retrieved from selected source Excel/CSV.'
+        : 'Data is retrieved from SM_LINE_ALL.';
       downloadForm.action = "{{ url_for('download_resource_table') }}";
       saveFileName.value = 'resource_table.csv';
     } else {
@@ -257,17 +483,78 @@
     await stream.close();
   }
 
+  async function fetchExcelBlob() {
+    if (!excelSourceFile || !excelSourceFile.files || excelSourceFile.files.length === 0) {
+      throw new Error('Source file is not selected');
+    }
+    const fd = new FormData();
+    fd.append('source_excel', excelSourceFile.files[0]);
+    const resp = await fetch(downloadForm.action, {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    if (!resp.ok) throw new Error('Download request failed');
+    return await resp.blob();
+  }
+
+  async function downloadExcelToChosenFolder() {
+    if (!directoryHandle) throw new Error('No folder selected');
+    const writable = await ensureDirectoryWritable(directoryHandle);
+    if (!writable) throw new Error('Folder write permission denied');
+    const fileName = (saveFileName.value || '').trim() || 'download.csv';
+    const blob = await fetchExcelBlob();
+    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+    const stream = await fileHandle.createWritable();
+    await stream.write(blob);
+    await stream.close();
+  }
+
+  async function downloadExcelByBrowser() {
+    const fileName = (saveFileName.value || '').trim() || 'download.csv';
+    const blob = await fetchExcelBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function doConfirm() {
     if (!confirmTarget) return;
+    if (erp === 'excel' && (!excelSourceFile || !excelSourceFile.files || excelSourceFile.files.length === 0)) {
+      alert('ソースとなる Excel/CSV ファイルを選択してください。');
+      return;
+    }
     if (directoryHandle && window.showDirectoryPicker) {
-      downloadToChosenFolder()
+      const runner = erp === 'excel' ? downloadExcelToChosenFolder : downloadToChosenFolder;
+      runner()
         .catch((err) => {
           console.error(err);
           alert('フォルダ保存に失敗したため、通常ダウンロードに切り替えます。');
-          downloadForm.submit();
+          if (erp === 'excel') {
+            downloadExcelByBrowser().catch((e) => {
+              console.error(e);
+              alert('ダウンロードに失敗しました。');
+            });
+          } else {
+            downloadForm.submit();
+          }
         })
         .finally(() => closeConfirm());
     } else {
+      if (erp === 'excel') {
+        downloadExcelByBrowser()
+          .catch((err) => {
+            console.error(err);
+            alert('ダウンロードに失敗しました。');
+          })
+          .finally(() => closeConfirm());
+        return;
+      }
       downloadForm.submit();
       closeConfirm();
     }

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, session
 import sqlite3
 import csv
 import os
@@ -24,6 +24,7 @@ COMMON_DIR = PLATFORM_ROOT / "common"
 
 sys.path.insert(0, str(PLATFORM_ROOT))
 from config.settings import DATA_DIR, DB_PATH, UPLOAD_FOLDER
+from config.bridge_customers import BRIDGE_CUSTOMERS
 from core.asprova_parser import (
     detect_columns,
     parse_schedule_upload_row,
@@ -224,7 +225,19 @@ def inject_global_stats():
         conn.close()
     except Exception:
         total = 0
-    return {'schedule_total': total}
+    options = [
+        {"id": k, "label": str(v.get("label") or k)}
+        for k, v in BRIDGE_CUSTOMERS.items()
+        if isinstance(v, dict)
+    ]
+    selected_customer_id = str(session.get("viewer_customer_id") or "").strip().lower()
+    connected = bool(selected_customer_id and any(o["id"] == selected_customer_id for o in options))
+    return {
+        'schedule_total': total,
+        'viewer_customer_profiles': options,
+        'viewer_selected_customer_id': selected_customer_id,
+        'viewer_customer_connected': connected,
+    }
 
 
 def init_db():
@@ -353,6 +366,21 @@ def get_earliest_schedule_date():
 def index():
     # Default landing page is the gantt view.
     return redirect(url_for('gantt'))
+
+
+@app.route('/viewer/connect', methods=['POST'])
+def viewer_connect():
+    customer_id = (request.form.get('customer_id') or '').strip().lower()
+    if customer_id and customer_id not in BRIDGE_CUSTOMERS:
+        flash('選択したCustomerが不正です。', 'error')
+        return redirect(request.referrer or url_for('gantt'))
+    if customer_id:
+        session['viewer_customer_id'] = customer_id
+        flash('Viewer customer connected.', 'success')
+    else:
+        session.pop('viewer_customer_id', None)
+        flash('Viewer customer cleared.', 'success')
+    return redirect(request.referrer or url_for('gantt'))
 
 
 @app.route('/upload', methods=['GET', 'POST'])
@@ -651,6 +679,7 @@ def gantt():
     range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
     query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
     params = [range_end, range_start, range_end, range_start]
+    query += " AND TRIM(COALESCE(item_id, '')) <> ''"
 
     if machine_filter:
         query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
@@ -755,6 +784,7 @@ def api_gantt_data():
     range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
     query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
     params = [range_end, range_start, range_end, range_start]
+    query += " AND TRIM(COALESCE(item_id, '')) <> ''"
     if machine_filter:
         query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
         params.extend([machine_filter, machine_filter])
@@ -1334,6 +1364,14 @@ def psi_view():
         end_date = start_date.replace(year=start_date.year + 1, month=1)
     else:
         end_date = start_date.replace(month=start_date.month + 1)
+    if start_date.month == 1:
+        prev_start = start_date.replace(year=start_date.year - 1, month=12, day=1)
+    else:
+        prev_start = start_date.replace(month=start_date.month - 1, day=1)
+    if start_date.month == 12:
+        next_start = start_date.replace(year=start_date.year + 1, month=1, day=1)
+    else:
+        next_start = start_date.replace(month=start_date.month + 1, day=1)
 
     day_list, ordered_items, next_item_for, supply_qty, agg = _build_psi_data_for_month(start_date, end_date)
     day_labels = [f"{d.day}/{d.strftime('%b')}" for d in day_list]
@@ -1380,6 +1418,155 @@ def psi_view():
         psi_items=psi_items,
         month_label=start_date.strftime('%Y-%m'),
         psi_date=start_date.strftime('%Y-%m-%d'),
+        start_date=start_date,
+        prev_date=prev_start.strftime('%Y-%m-%d'),
+        next_date=next_start.strftime('%Y-%m-%d'),
+    )
+
+
+def _parse_month_ym(ym: str) -> tuple[str, datetime, datetime]:
+    raw = (ym or "").strip()
+    month_start = datetime.strptime(raw + "-01", "%Y-%m-%d")
+    if month_start.month == 12:
+        month_end = datetime(month_start.year + 1, 1, 1)
+    else:
+        month_end = datetime(month_start.year, month_start.month + 1, 1)
+    return raw, month_start, month_end
+
+
+@app.route('/monthly-result')
+def monthly_result_view():
+    view = 'monthly'
+    if 'date' in request.args:
+        date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    else:
+        date_str = get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    try:
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        current_date = datetime.now()
+    start_date = current_date.replace(day=1)
+    if start_date.month == 12:
+        end_date = start_date.replace(year=start_date.year + 1, month=1)
+    else:
+        end_date = start_date.replace(month=start_date.month + 1)
+    if start_date.month == 1:
+        prev_start = start_date.replace(year=start_date.year - 1, month=12, day=1)
+    else:
+        prev_start = start_date.replace(month=start_date.month - 1, day=1)
+    if start_date.month == 12:
+        next_start = start_date.replace(year=start_date.year + 1, month=1, day=1)
+    else:
+        next_start = start_date.replace(month=start_date.month + 1, day=1)
+    prev_date = prev_start.strftime('%Y-%m-%d')
+    next_date = next_start.strftime('%Y-%m-%d')
+
+    conn = get_db()
+    try:
+        sql = """
+            WITH base AS (
+              SELECT
+                TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS line_name,
+                work_user_res_order,
+                CASE
+                  WHEN actual_quantity IS NOT NULL THEN actual_quantity
+                  WHEN quantity IS NOT NULL THEN quantity
+                  ELSE 0
+                END AS qty_val,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_start
+                  ELSE start_time
+                END AS start_ts,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_end
+                  ELSE end_time
+                END AS end_ts
+              FROM schedules
+              WHERE TRIM(COALESCE(item_id, '')) <> ''
+            )
+            SELECT
+              line_name,
+              work_user_res_order,
+              qty_val,
+              start_ts,
+              end_ts
+            FROM base
+            WHERE start_ts IS NOT NULL
+              AND end_ts IS NOT NULL
+              AND start_ts < ?
+              AND end_ts > ?
+            ORDER BY line_name, start_ts
+        """
+        params = (
+            end_date.strftime('%Y-%m-%d %H:%M:%S'),
+            start_date.strftime('%Y-%m-%d %H:%M:%S'),
+        )
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    day_list: list[datetime] = []
+    cur = start_date
+    while cur < end_date:
+        day_list.append(cur)
+        cur += timedelta(days=1)
+    day_keys = [d.strftime('%Y-%m-%d') for d in day_list]
+
+    qty_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
+    wh_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
+    lines: set[str] = set()
+    min_wro_by_line: dict[str, float] = {}
+    for row in rows:
+        line_name = str(row['line_name'] or '').strip() or 'Unknown'
+        lines.add(line_name)
+        wro = _parse_work_user_res_order_val(row['work_user_res_order'])
+        prev_min = min_wro_by_line.get(line_name)
+        if prev_min is None or wro < prev_min:
+            min_wro_by_line[line_name] = wro
+        qty = float(row['qty_val'] or 0)
+        start_ts = datetime.strptime(str(row['start_ts']), '%Y-%m-%d %H:%M:%S')
+        end_ts = datetime.strptime(str(row['end_ts']), '%Y-%m-%d %H:%M:%S')
+        day_key = start_ts.strftime('%Y-%m-%d')
+        if day_key in day_keys:
+            qty_by_line_day[(line_name, day_key)] += qty
+
+        d0 = datetime(start_ts.year, start_ts.month, start_ts.day)
+        if d0 < start_date:
+            d0 = start_date
+        while d0 < end_date and d0 < end_ts:
+            d1 = d0 + timedelta(days=1)
+            seg_s = max(start_ts, d0)
+            seg_e = min(end_ts, d1, end_date)
+            if seg_e > seg_s:
+                wh_by_line_day[(line_name, d0.strftime('%Y-%m-%d'))] += (seg_e - seg_s).total_seconds() / 3600.0
+            d0 = d1
+
+    line_items = []
+    lines_ordered = sorted(
+        lines,
+        key=lambda ln: (min_wro_by_line.get(ln, float('inf')), ln),
+    )
+    for line_name in lines_ordered:
+        qty_cells = []
+        wh_cells = []
+        for k in day_keys:
+            q = qty_by_line_day.get((line_name, k), 0.0)
+            h = wh_by_line_day.get((line_name, k), 0.0)
+            qty_cells.append("" if q == 0 else (f"{q:,.0f}" if abs(q - round(q)) < 1e-9 else f"{q:,.3f}".rstrip('0').rstrip('.')))
+            wh_cells.append("" if h == 0 else f"{h:,.2f}".rstrip('0').rstrip('.'))
+        line_items.append({"line_name": line_name, "qty_cells": qty_cells, "wh_cells": wh_cells})
+
+    return render_template(
+        'monthly_result.html',
+        view=view,
+        current_date=current_date,
+        start_date=start_date,
+        end_date=end_date,
+        prev_date=prev_date,
+        next_date=next_date,
+        day_labels=[f"{d.day}/{d.strftime('%b')}" for d in day_list],
+        line_items=line_items,
+        source_name='schedule.db',
     )
 
 

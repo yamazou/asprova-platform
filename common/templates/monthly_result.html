@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}Monthly Result{% endblock %}
+
+{% block extra_styles %}
+<style>
+.mr-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.mr-table th, .mr-table td {
+  border: 1px solid #d6dee9;
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.mr-header {
+  background: #bce597;
+  font-weight: 600;
+  text-align: center;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.mr-line { width: 220px; }
+.mr-type { width: 70px; }
+.mr-table .mr-line {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: inherit;
+}
+.mr-table .mr-type {
+  position: sticky;
+  left: 220px;
+  z-index: 3;
+  background: inherit;
+}
+.mr-table th.mr-line,
+.mr-table th.mr-type {
+  z-index: 4;
+  background: #bce597;
+}
+.mr-cell { white-space: pre-line; text-align: left; }
+.mr-day-col {
+  width: var(--mr-cell-w, 120px);
+  min-width: var(--mr-cell-w, 120px);
+}
+.mr-row-even { background: #ffffff; }
+.mr-row-odd { background: #ddf2ca; }
+.mr-scroll { max-height: 70vh; overflow: auto; }
+.mr-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="nav-arrows" style="margin-top:6px;">
+      <a href="{{ url_for('monthly_result_view', date=prev_date) }}">← Prev</a>
+      <span class="date-label">{{ start_date.strftime('%b %Y') }}</span>
+      <a href="{{ url_for('monthly_result_view', date=next_date) }}">Next →</a>
+    </div>
+  </div>
+  <div class="mr-page-actions">
+    <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
+      <span class="view-zoom-bar__label">Zoom</span>
+      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-out">−</button>
+      <span class="view-zoom-bar__pct" id="mr-zoom-pct">100%</span>
+      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-in">+</button>
+      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-reset">100%</button>
+    </div>
+    <span class="hint">Source: <code>{{ source_name }}</code></span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body" style="padding:0;">
+    {% if line_items %}
+    <div class="mr-scroll" id="mr-scroll-root">
+      <div id="mr-zoom-inner">
+      <table class="mr-table">
+        <thead>
+          <tr>
+            <th class="mr-header mr-line">Line</th>
+            <th class="mr-header mr-type">Type</th>
+            {% for label in day_labels %}
+            <th class="mr-header mr-day-col">{{ label }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in line_items %}
+          {% set row_class = 'mr-row-even' if loop.index0 % 2 == 0 else 'mr-row-odd' %}
+          <tr class="{{ row_class }}">
+            <td class="mr-line" rowspan="2">{{ row.line_name }}</td>
+            <td class="mono mr-type">Qty</td>
+            {% for cell in row.qty_cells %}
+            <td class="mono mr-cell mr-day-col">{{ cell }}</td>
+            {% endfor %}
+          </tr>
+          <tr class="{{ row_class }}">
+            <td class="mono mr-type">WH</td>
+            {% for cell in row.wh_cells %}
+            <td class="mono mr-cell mr-day-col">{{ cell }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </div>
+    {% else %}
+    <div style="padding:18px;" class="hint">
+      指定した月のデータがありません。
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var VIEW_ZOOM_KEY = 'asprovaViewZoom';
+  var VIEW_ZOOM_MIN = 0.5;
+  var VIEW_ZOOM_MAX = 5;
+  var VIEW = {{ view|tojson }};
+
+  function getViewZoom() {
+    var v = parseFloat(sessionStorage.getItem(VIEW_ZOOM_KEY), 10);
+    if (!isFinite(v)) v = 1;
+    return Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, v));
+  }
+  function setViewZoomStored(next) {
+    var z = Math.min(VIEW_ZOOM_MAX, Math.max(VIEW_ZOOM_MIN, next));
+    sessionStorage.setItem(VIEW_ZOOM_KEY, String(z));
+    return z;
+  }
+  function applyZoom(z) {
+    var table = document.querySelector('.mr-table');
+    if (!table) return;
+    var baseCell = VIEW === 'daily' ? 60 : 120;
+    var cellPx = Math.round(baseCell * z);
+    table.style.setProperty('--mr-cell-w', cellPx + 'px');
+  }
+  function setZoom(next) {
+    var z = setViewZoomStored(next);
+    var pct = document.getElementById('mr-zoom-pct');
+    if (pct) pct.textContent = Math.round(z * 100) + '%';
+    applyZoom(z);
+  }
+
+  setZoom(getViewZoom());
+  document.getElementById('mr-zoom-in')?.addEventListener('click', function() { setZoom(getViewZoom() + 0.1); });
+  document.getElementById('mr-zoom-out')?.addEventListener('click', function() { setZoom(getViewZoom() - 0.1); });
+  document.getElementById('mr-zoom-reset')?.addEventListener('click', function() { setZoom(1); });
+})();
+</script>
+{% endblock %}

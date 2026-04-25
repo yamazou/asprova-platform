@@ -30,6 +30,23 @@
 .psi-type {
     width: 70px;
 }
+.psi-table .psi-item {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background: inherit;
+}
+.psi-table .psi-type {
+    position: sticky;
+    left: 220px;
+    z-index: 3;
+    background: inherit;
+}
+.psi-table th.psi-item,
+.psi-table th.psi-type {
+    z-index: 4;
+    background: #bce597;
+}
 .psi-row-even {
     background: #ffffff;
 }
@@ -105,9 +122,10 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <div class="page-title">PSI Viewer</div>
-        <div class="page-subtitle">
-            Monthly PSI for {{ month_label }}
+        <div class="nav-arrows" style="margin-top:6px;">
+            <a href="{{ url_for('psi_view', date=prev_date) }}">← Prev</a>
+            <span class="date-label">{{ start_date.strftime('%b %Y') }}</span>
+            <a href="{{ url_for('psi_view', date=next_date) }}">Next →</a>
         </div>
     </div>
     <div class="psi-page-actions">

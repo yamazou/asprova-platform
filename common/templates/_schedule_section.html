@@ -40,7 +40,9 @@
     <div class="nav-arrows">
         <a href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
         <span class="date-label">
-            {% if view != 'daily' %}
+            {% if view == 'monthly' %}
+                {{ start_date.strftime('%b %Y') }}
+            {% elif view != 'daily' %}
                 {{ start_date.strftime('%b %d') }} – {{ (end_date - (end_date - start_date)).strftime('%b %d') if view in ['weekly','2week','3week'] else end_date.strftime('%b %d') }}
             {% else %}
                 {{ current_date.strftime('%Y-%m-%d') }}
