@@ -275,6 +275,10 @@
     text-align: center;
     font-weight: 400;
 }
+.gantt-op-detail__qty-actual {
+    color: #0d47a1;
+    font-weight: 500;
+}
 .gantt-op-detail__empty {
     padding: 12px;
     color: var(--text-dim);
@@ -1399,6 +1403,7 @@ function renderResourceOperationDetail(resourceName) {
     const grouped = rows.map((t) => ({
         startMd: formatMonthDayForGanttDetail(t.actual_start || t.plan_start || t.start),
         itemId: String(t.item_id || '—'),
+        hasActualQty: normalizeGanttActualQuantity(t) !== null,
         quantity: (() => {
             const aq = normalizeGanttActualQuantity(t);
             return aq === null ? formatGanttQtyLabel(t.quantity) : formatGanttQtyLabel(aq);
@@ -1440,10 +1445,11 @@ function renderResourceOperationDetail(resourceName) {
         const itemCell = r.itemRowspan > 0
             ? `<td rowspan="${r.itemRowspan}">${escapeHtml(r.itemId)}</td>`
             : '';
+        const qtyCls = r.hasActualQty ? ' class="gantt-op-detail__qty-actual"' : '';
         return `<tr>
             ${startCell}
             ${itemCell}
-            <td>${escapeHtml(r.quantity)}</td>
+            <td${qtyCls}>${escapeHtml(r.quantity)}</td>
             <td>${escapeHtml(r.status)}</td>
             <td>${escapeHtml(r.plannedQty)}</td>
         </tr>`;

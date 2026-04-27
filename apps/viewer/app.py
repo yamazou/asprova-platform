@@ -1696,9 +1696,13 @@ def clear_data():
     conn = get_db()
     conn.execute('DELETE FROM schedules')
     conn.execute('DELETE FROM uploads')
+    conn.execute('DELETE FROM psi_input_instructions')
+    conn.execute('DELETE FROM psi_input_instruction_uploads')
+    conn.execute('DELETE FROM psi_output_instructions')
+    conn.execute('DELETE FROM psi_output_instruction_uploads')
     conn.commit()
     conn.close()
-    flash('All schedule data cleared', 'success')
+    flash('All schedule/PSI data cleared', 'success')
     return redirect(url_for('index'))
 
 
