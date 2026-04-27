@@ -529,6 +529,26 @@
     font-size: 11px;
     padding: 6px 12px;
 }
+.tooltip-result-save-btn {
+    font-size: 11px;
+    padding: 6px 12px;
+}
+.tooltip-result-qty-input {
+    width: 100%;
+    min-width: 90px;
+    max-width: 160px;
+    padding: 4px 6px;
+    border: 1px solid rgba(13, 71, 161, 0.55);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-bright);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+}
+.tooltip-result-qty-input:focus {
+    outline: none;
+    border-color: var(--accent2);
+}
 
 .tooltip-title {
     font-family: 'IBM Plex Mono', monospace;
@@ -2347,6 +2367,7 @@ function showTooltip(e, el) {
     const aqCls = nAq !== null ? ' tooltip-val--plan-moved' : '';
     const sid = task.id;
     const canSave = sid != null && sid !== '';
+    const resultQtyInitialRaw = nAq !== null ? formatGanttQtyLabel(nAq) : (formatGanttQtyLabel(task.quantity) === '—' ? '' : formatGanttQtyLabel(task.quantity));
     const ps = task.plan_start != null ? String(task.plan_start) : '';
     const pe = task.plan_end != null ? String(task.plan_end) : '';
     const pm = task.plan_machine != null ? String(task.plan_machine) : '';
@@ -2406,10 +2427,52 @@ function showTooltip(e, el) {
         ${tooltipRowsHtml}
         ${
             canSave
-                ? `<div class="tooltip-row tooltip-row--reset"><button type="button" class="btn btn-sm btn-danger tooltip-result-reset-btn">Result Reset</button></div>`
+                ? `<div class="tooltip-row"><span class="tooltip-label">Result qty</span><input type="text" class="tooltip-result-qty-input" id="tooltip-result-qty-input" value="${escapeHtml(String(resultQtyInitialRaw || ''))}" aria-label="Result quantity"></div>
+                   <div class="tooltip-row tooltip-row--reset"><button type="button" class="btn btn-sm btn-primary tooltip-result-save-btn">Save</button><button type="button" class="btn btn-sm btn-danger tooltip-result-reset-btn">Result Reset</button></div>`
                 : ''
         }
     `;
+
+    const saveBtn = tooltip.querySelector('.tooltip-result-save-btn');
+    const qtyInput = tooltip.querySelector('#tooltip-result-qty-input');
+    if (saveBtn && qtyInput && canSave) {
+        saveBtn.addEventListener('click', async (evt) => {
+            evt.stopPropagation();
+            saveBtn.disabled = true;
+            const raw = String(qtyInput.value ?? '').trim();
+            let bodyVal;
+            if (raw === '') {
+                bodyVal = null;
+            } else if (!Number.isFinite(Number(raw))) {
+                saveBtn.disabled = false;
+                qtyInput.focus();
+                return;
+            } else {
+                bodyVal = Number(raw);
+            }
+            try {
+                const res = await fetch(scheduleActualQuantityUrl(sid), {
+                    method: 'POST',
+                    headers: actualQtyFetchHeaders(),
+                    body: JSON.stringify({ actual_quantity: bodyVal }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) {
+                    saveBtn.disabled = false;
+                    return;
+                }
+                const tidn = Number(sid);
+                for (let i = 0; i < TASKS.length; i++) {
+                    if (Number(TASKS[i].id) !== tidn) continue;
+                    TASKS[i].actual_quantity = data.actual_quantity;
+                    break;
+                }
+                renderGantt();
+            } catch (err) {
+                saveBtn.disabled = false;
+            }
+        });
+    }
 
     const resetBtn = tooltip.querySelector('.tooltip-result-reset-btn');
     if (resetBtn && canSave) {
