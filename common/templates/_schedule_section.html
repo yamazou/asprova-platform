@@ -136,9 +136,9 @@
         Try navigating to a different date or importing schedule data
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center;">
-        <a href="{{ url_for('upload') }}" class="btn btn-primary">Import CSV</a>
+        <a href="{{ url_for('upload') }}" class="btn btn-primary">Imp. Operation</a>
         <a href="{{ url_for('export_schedules_csv') }}" class="btn btn-ghost"
-           data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">Export CSV</a>
+           data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">Exp. Result</a>
     </div>
 </div>
 {% endif %}

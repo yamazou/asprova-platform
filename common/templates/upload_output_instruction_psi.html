@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Imp. Operation — Asprova Schedule Viewer{% endblock %}
+{% block title %}Output Instruction (PSI) — Asprova Schedule Viewer{% endblock %}
 
 {% block extra_styles %}
 <style>
@@ -12,12 +12,10 @@
     cursor: pointer;
     position: relative;
 }
-
 .drop-zone:hover, .drop-zone.drag-over {
     border-color: var(--accent);
     background: rgba(0,212,255,0.04);
 }
-
 .drop-zone input[type="file"] {
     position: absolute;
     inset: 0;
@@ -26,13 +24,7 @@
     width: 100%;
     height: 100%;
 }
-
-.drop-icon {
-    font-size: 48px;
-    margin-bottom: 16px;
-    opacity: 0.5;
-}
-
+.drop-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
 .upload-folder-toggle {
     display: flex;
     align-items: center;
@@ -43,26 +35,6 @@
     user-select: none;
 }
 .upload-folder-toggle input { accent-color: var(--accent); }
-
-.machine-section { margin-bottom: 20px; }
-.machine-header {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-bottom: none;
-    border-radius: 8px 8px 0 0;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-.machine-name { font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; color: #000000; }
-.machine-count { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); }
-.machine-body {
-    border: 1px solid var(--border);
-    border-radius: 0 0 8px 8px;
-    overflow: hidden;
-}
-
 #file-preview-list {
     list-style: none;
     margin: 0;
@@ -79,23 +51,30 @@
     border-bottom: 1px solid var(--border);
 }
 #file-preview-list li:last-child { border-bottom: none; }
+.oi-stats {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-top: 28px;
+}
+@media (max-width: 640px) { .oi-stats { grid-template-columns: 1fr; } }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
-        <div class="page-title">Imp. Operation</div>
-        <div class="page-subtitle">Upload Asprova production schedule export</div>
+        <div class="page-title">Output Instruction (PSI)</div>
+        <div class="page-subtitle">Upload Asprova Output Instruction CSV (e.g. outputinst.csv)</div>
     </div>
 </div>
 
 <div class="card">
     <div class="card-header">
-        <span class="card-title">Upload Schedule CSV</span>
+        <span class="card-title">Upload Output Instruction CSV</span>
     </div>
     <div class="card-body">
-        <form method="POST" enctype="multipart/form-data" id="upload-form">
+        <form method="POST" enctype="multipart/form-data" id="upload-form" action="{{ url_for('upload_output_instruction_psi') }}">
             <label class="upload-folder-toggle" title="Recommended: Chrome / Edge">
                 <input type="checkbox" id="folder-mode" value="1">
                 <span>Select folder (import all CSV files in the folder)</span>
@@ -132,8 +111,29 @@
     </div>
 </div>
 
-<div style="margin-top:28px;">
-{% include '_schedule_section.html' %}
+<div class="oi-stats">
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div class="mono" style="font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Output Instruction rows</div>
+            <div class="mono" style="font-size:32px; font-weight:600; color:var(--accent);">{{ oi_total }}</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-body" style="padding:18px 20px;">
+            <div class="mono" style="font-size:11px; color:var(--text-dim); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">Recent imports</div>
+            <div style="font-size:12px; color:var(--text-bright);">
+                {% if oi_uploads %}
+                <ul style="margin:0; padding-left:18px;">
+                    {% for u in oi_uploads %}
+                    <li class="mono">{{ u.filename }} — {{ u.row_count }} rows</li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <span style="color:var(--text-dim);">No imports yet</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -250,17 +250,6 @@ uploadForm.addEventListener('submit', (e) => {
     if (dupInBatch || dupPrior) {
         const ok = confirm('Files with the same name exist. Do you want to overwrite?');
         if (!ok) e.preventDefault();
-    }
-});
-
-document.querySelectorAll('.duration-cell').forEach(cell => {
-    const start = new Date(cell.dataset.start);
-    const end = new Date(cell.dataset.end);
-    if (!isNaN(start) && !isNaN(end)) {
-        const mins = Math.round((end - start) / 60000);
-        const h = Math.floor(mins / 60);
-        const m = mins % 60;
-        cell.textContent = h > 0 ? `${h}h ${m}m` : `${m}m`;
     }
 });
 </script>

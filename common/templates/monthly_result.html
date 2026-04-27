@@ -8,7 +8,10 @@
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 12px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  --mr-line-w: 140px;
+  --mr-type-left: 140px;
 }
 .mr-table th, .mr-table td {
   border: 1px solid #d6dee9;
@@ -16,14 +19,33 @@
   vertical-align: top;
 }
 .mr-header {
-  background: #bce597;
-  font-weight: 600;
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 10px;
+  padding: 8px 4px;
   text-align: center;
+  vertical-align: bottom;
   position: sticky;
   top: 0;
   z-index: 2;
+  overflow: visible;
 }
-.mr-line { width: 220px; }
+.mr-th-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 10px;
+  bottom: 0;
+  cursor: col-resize;
+  z-index: 40;
+  background: transparent;
+  box-sizing: border-box;
+}
+.mr-th-resize-handle:hover {
+  background: rgba(0, 212, 255, 0.12);
+}
+.mr-line { width: var(--mr-line-w); min-width: var(--mr-line-w); }
 .mr-type { width: 70px; }
 .mr-table .mr-line {
   position: sticky;
@@ -33,50 +55,213 @@
 }
 .mr-table .mr-type {
   position: sticky;
-  left: 220px;
+  left: var(--mr-type-left);
   z-index: 3;
   background: inherit;
 }
 .mr-table th.mr-line,
 .mr-table th.mr-type {
   z-index: 4;
-  background: #bce597;
+  background: var(--surface2);
 }
 .mr-cell { white-space: pre-line; text-align: left; }
 .mr-day-col {
   width: var(--mr-cell-w, 120px);
   min-width: var(--mr-cell-w, 120px);
+  border-right: 1px solid rgba(30,58,95,0.5);
 }
+.mr-header.mr-day-col {
+  border-right: 1px solid rgba(30,58,95,0.5);
+}
+.mr-line a { font-size: 12px; font-weight: 400; }
 .mr-row-even { background: #ffffff; }
-.mr-row-odd { background: #ddf2ca; }
+.mr-row-odd { background: rgb(243,255,243); }
 .mr-scroll { max-height: 70vh; overflow: auto; }
 .mr-page-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   flex-wrap: wrap;
+}
+.mr-filter-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+.mr-zoom-wrap {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+#mr-machine-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  outline: none;
+}
+#mr-machine-select:focus {
+  border-color: rgba(0,212,255,0.5);
+}
+
+/* Export confirm popup (same pattern as PSI) */
+#mr-export-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+#mr-export-overlay.show { display: flex; }
+#mr-detail-export-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+#mr-detail-export-overlay.show { display: flex; }
+#mr-export-box,
+#mr-detail-export-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 28px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  min-width: 320px;
+  max-width: 520px;
+}
+.mr-export-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 10px;
+}
+.mr-export-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+.mr-export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.mr-detail-card { margin-top: 10px; }
+.mr-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-bright);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.mr-detail-body { max-height: 280px; overflow: auto; }
+.mr-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.mr-detail-table th,
+.mr-detail-table td {
+  border: 1px solid rgba(30,58,95,0.25);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+.mr-detail-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface2);
+  color: var(--text-dim);
+  text-align: center;
+  font-weight: 400;
 }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <div>
+  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
     <div class="nav-arrows" style="margin-top:6px;">
-      <a href="{{ url_for('monthly_result_view', date=prev_date) }}">← Prev</a>
+      <a href="{{ url_for('monthly_result_view', date=prev_date, machine=machine_filter) }}">← Prev</a>
       <span class="date-label">{{ start_date.strftime('%b %Y') }}</span>
-      <a href="{{ url_for('monthly_result_view', date=next_date) }}">Next →</a>
+      <a href="{{ url_for('monthly_result_view', date=next_date, machine=machine_filter) }}">Next →</a>
     </div>
+    <div class="mr-zoom-wrap">
+      <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
+        <span class="view-zoom-bar__label">Zoom</span>
+        <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-out">−</button>
+        <span class="view-zoom-bar__pct" id="mr-zoom-pct">100%</span>
+        <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-in">+</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-reset">100%</button>
+      </div>
+    </div>
+    <form method="GET" class="mr-filter-form">
+      <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
+      <select name="machine" id="mr-machine-select" onchange="this.form.submit()" aria-label="Resource filter">
+        <option value="">All resources</option>
+        {% for m in resources %}
+        <option value="{{ m }}" {% if machine_filter == m %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </form>
   </div>
   <div class="mr-page-actions">
-    <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
-      <span class="view-zoom-bar__label">Zoom</span>
-      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-out">−</button>
-      <span class="view-zoom-bar__pct" id="mr-zoom-pct">100%</span>
-      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-in">+</button>
-      <button type="button" class="btn btn-sm btn-ghost" id="mr-zoom-reset">100%</button>
+    <a href="{{ url_for('export_monthly_result', date=current_date.strftime('%Y-%m-%d'), machine=machine_filter) }}" class="btn btn-primary" id="mr-export-link">Export Excel</a>
+  </div>
+</div>
+
+<div id="mr-export-overlay" aria-hidden="true">
+  <div id="mr-export-box">
+    <div class="mr-export-title">Export Excel</div>
+    <div class="mr-export-desc">
+      Export the Monthly Result table to an Excel file. Click OK to proceed.<br>
+      (The save location follows your browser download settings.)
     </div>
-    <span class="hint">Source: <code>{{ source_name }}</code></span>
+    <div class="mr-export-actions">
+      <button type="button" class="btn" id="mr-export-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="mr-export-ok">OK</button>
+    </div>
+  </div>
+</div>
+<div id="mr-detail-export-overlay" aria-hidden="true">
+  <div id="mr-detail-export-box">
+    <div class="mr-export-title">Export Excel</div>
+    <div class="mr-export-desc">
+      Export the table to an Excel file. Click OK to proceed.<br>
+      (The save location follows your browser download settings.)
+    </div>
+    <div class="mr-export-actions">
+      <button type="button" class="btn" id="mr-detail-export-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="mr-detail-export-ok">OK</button>
+    </div>
   </div>
 </div>
 
@@ -88,10 +273,10 @@
       <table class="mr-table">
         <thead>
           <tr>
-            <th class="mr-header mr-line">Line</th>
+            <th class="mr-header mr-line">Resource</th>
             <th class="mr-header mr-type">Type</th>
             {% for label in day_labels %}
-            <th class="mr-header mr-day-col">{{ label }}</th>
+            <th class="mr-header mr-day-col">{{ label }}<span class="mr-th-resize-handle" role="separator" aria-label="Drag to zoom" title="Drag to zoom table"></span></th>
             {% endfor %}
           </tr>
         </thead>
@@ -99,7 +284,12 @@
           {% for row in line_items %}
           {% set row_class = 'mr-row-even' if loop.index0 % 2 == 0 else 'mr-row-odd' %}
           <tr class="{{ row_class }}">
-            <td class="mr-line" rowspan="2">{{ row.line_name }}</td>
+            <td class="mr-line" rowspan="2">
+              <div>
+                <a href="{{ url_for('monthly_result_view', date=current_date.strftime('%Y-%m-%d'), machine=row.line_name) }}">{{ row.line_name }}</a>
+              </div>
+              <div class="mono" style="font-size:11px; color:var(--text-dim); margin-top:2px;">{{ row.op_count }} ops</div>
+            </td>
             <td class="mono mr-type">Qty</td>
             {% for cell in row.qty_cells %}
             <td class="mono mr-cell mr-day-col">{{ cell }}</td>
@@ -123,6 +313,52 @@
     {% endif %}
   </div>
 </div>
+{% if machine_filter %}
+<div class="card mr-detail-card">
+  <div class="mr-detail-head">
+    <span>Resource: {{ machine_filter }} ({{ detail_rows|length }} operations)</span>
+    <a
+      href="{{ url_for('export_monthly_result_resource_detail', date=current_date.strftime('%Y-%m-%d'), machine=machine_filter) }}"
+      id="mr-detail-export-link"
+      class="btn btn-sm btn-primary"
+    >Export Excel</a>
+  </div>
+  <div class="mr-detail-body">
+    <table class="mr-detail-table">
+      <thead>
+        <tr>
+          <th>start (M/D)</th>
+          <th>item_id</th>
+          <th>quantity</th>
+          <th>status</th>
+          <th>planned quantity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if detail_rows %}
+          {% for r in detail_rows %}
+          <tr>
+            {% if r.start_rowspan > 0 %}
+            <td rowspan="{{ r.start_rowspan }}">{{ r.start_md }}</td>
+            {% endif %}
+            {% if r.item_rowspan > 0 %}
+            <td rowspan="{{ r.item_rowspan }}">{{ r.item_id }}</td>
+            {% endif %}
+            <td>{{ r.quantity if r.quantity is not none else '—' }}</td>
+            <td>{{ r.status }}</td>
+            <td>{{ r.planned_quantity if r.planned_quantity is not none else '—' }}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="5" class="hint">No operations for this resource in current view.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -147,8 +383,40 @@
     var table = document.querySelector('.mr-table');
     if (!table) return;
     var baseCell = VIEW === 'daily' ? 60 : 120;
-    var cellPx = Math.round(baseCell * z);
-    table.style.setProperty('--mr-cell-w', cellPx + 'px');
+    var padLabel = Math.round(12 * z);
+    var fsHeader = Math.max(8, Math.round(10 * z));
+    var fsMachine = Math.max(9, Math.round(11 * z));
+    var fsSub = Math.max(8, Math.round(9 * z));
+    var rows = table.querySelectorAll('tbody .mr-line[rowspan="2"]');
+    var longestMachineChars = 0;
+    var maxOpsCount = 0;
+    for (var r = 0; r < rows.length; r++) {
+      var nameEl = rows[r].querySelector('a');
+      var nm = (nameEl ? nameEl.textContent : rows[r].textContent || '').trim();
+      if (nm.length > longestMachineChars) longestMachineChars = nm.length;
+      var opsEl = rows[r].querySelector('.mono');
+      var opsTxt = (opsEl ? opsEl.textContent : '').trim();
+      var m = opsTxt.match(/^(\d+)/);
+      var c = m ? parseInt(m[1], 10) : 0;
+      if (isFinite(c) && c > maxOpsCount) maxOpsCount = c;
+    }
+    var wHeaderCol = padLabel + Math.ceil('Resource'.length * fsHeader * 0.56) + Math.round(14 * z);
+    var wMachineCol = padLabel + Math.ceil(longestMachineChars * fsMachine * 0.58) + Math.round(14 * z);
+    var subChars = Math.max(6, String(maxOpsCount).length + (maxOpsCount === 1 ? 3 : 4));
+    var wSubCol = padLabel + Math.ceil(subChars * fsSub * 0.56) + Math.round(10 * z);
+    var estLabelW = Math.max(wHeaderCol, wMachineCol, wSubCol);
+    var labelMin = Math.round(90 * z + padLabel);
+    var labelMax = Math.min(320, Math.round(240 * z));
+    var labelW = Math.round(Math.min(labelMax, Math.max(labelMin, estLabelW)));
+    table.style.zoom = String(z);
+    table.style.setProperty('--mr-cell-w', baseCell + 'px');
+    table.style.setProperty('--mr-line-w', labelW + 'px');
+    table.style.setProperty('--mr-type-left', labelW + 'px');
+    var cols = table.querySelectorAll('.mr-day-col');
+    for (var i = 0; i < cols.length; i++) {
+      cols[i].style.width = baseCell + 'px';
+      cols[i].style.minWidth = baseCell + 'px';
+    }
   }
   function setZoom(next) {
     var z = setViewZoomStored(next);
@@ -156,11 +424,122 @@
     if (pct) pct.textContent = Math.round(z * 100) + '%';
     applyZoom(z);
   }
+  var mrColResize = null;
+  var mrColResizeRaf = null;
+  function endMrColResize() {
+    if (mrColResizeRaf) {
+      cancelAnimationFrame(mrColResizeRaf);
+      mrColResizeRaf = null;
+    }
+    if (!mrColResize) return;
+    mrColResize = null;
+    document.body.style.cursor = '';
+    document.removeEventListener('mousemove', onMrColResizeMove);
+    document.removeEventListener('mouseup', onMrColResizeEnd);
+  }
+  function onMrColResizeMove(e) {
+    if (!mrColResize) return;
+    mrColResize.lastClientX = e.clientX;
+    if (mrColResizeRaf) return;
+    mrColResizeRaf = requestAnimationFrame(function() {
+      mrColResizeRaf = null;
+      if (!mrColResize) return;
+      var dx = mrColResize.lastClientX - mrColResize.startX;
+      var raw = mrColResize.z0 + dx / mrColResize.baseCell;
+      setZoom(raw);
+    });
+  }
+  function onMrColResizeEnd() {
+    endMrColResize();
+  }
+  function onMrColResizeStart(e) {
+    if (!e.target.closest('.mr-th-resize-handle')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (mrColResize) endMrColResize();
+    mrColResize = { startX: e.clientX, z0: getViewZoom(), baseCell: 120, lastClientX: e.clientX };
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', onMrColResizeMove);
+    document.addEventListener('mouseup', onMrColResizeEnd);
+  }
+  document.addEventListener('mousedown', onMrColResizeStart);
 
   setZoom(getViewZoom());
   document.getElementById('mr-zoom-in')?.addEventListener('click', function() { setZoom(getViewZoom() + 0.1); });
   document.getElementById('mr-zoom-out')?.addEventListener('click', function() { setZoom(getViewZoom() - 0.1); });
   document.getElementById('mr-zoom-reset')?.addEventListener('click', function() { setZoom(1); });
+})();
+
+(function() {
+  var link = document.getElementById('mr-export-link');
+  var overlay = document.getElementById('mr-export-overlay');
+  var okBtn = document.getElementById('mr-export-ok');
+  var cancelBtn = document.getElementById('mr-export-cancel');
+  if (!link || !overlay || !okBtn || !cancelBtn) return;
+
+  var href = link.getAttribute('href');
+  function openPopup() {
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+  function closePopup() {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  link.addEventListener('click', function(e) {
+    e.preventDefault();
+    openPopup();
+  });
+  okBtn.addEventListener('click', function() {
+    closePopup();
+    window.location.href = href;
+  });
+  cancelBtn.addEventListener('click', function() {
+    closePopup();
+  });
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) closePopup();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closePopup();
+  });
+})();
+
+(function() {
+  var link = document.getElementById('mr-detail-export-link');
+  var overlay = document.getElementById('mr-detail-export-overlay');
+  var okBtn = document.getElementById('mr-detail-export-ok');
+  var cancelBtn = document.getElementById('mr-detail-export-cancel');
+  if (!link || !overlay || !okBtn || !cancelBtn) return;
+
+  var href = link.getAttribute('href');
+  function openPopup() {
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+  function closePopup() {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  link.addEventListener('click', function(e) {
+    e.preventDefault();
+    openPopup();
+  });
+  okBtn.addEventListener('click', function() {
+    closePopup();
+    window.location.href = href;
+  });
+  cancelBtn.addEventListener('click', function() {
+    closePopup();
+  });
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) closePopup();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closePopup();
+  });
 })();
 </script>
 {% endblock %}

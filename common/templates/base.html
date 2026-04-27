@@ -48,35 +48,43 @@
       </a>
       <nav class="nav">
         <button type="button" class="nav-btn" onclick="openConnect()">Connect</button>
-        {# Gantt Chart #}
-        {% if request.endpoint == 'gantt' and current_date is defined and view is defined %}
-          <a href="{{ url_for('gantt', date=current_date.strftime('%Y-%m-%d'), view=view, machine=machine_filter|default('')) }}" class="active">
-            Gantt Chart
-          </a>
-        {% else %}
-          <a href="{{ url_for('gantt') }}" class="{% if request.endpoint == 'gantt' %}active{% endif %}">
-            Gantt Chart
-          </a>
-        {% endif %}
+        {% set viewer_nav_active = request.endpoint in ('gantt', 'psi_view', 'monthly_result_view') %}
+        <details class="nav-dropdown">
+          <summary class="nav-dropdown__summary{% if viewer_nav_active %} nav-dropdown__summary--active{% endif %}" aria-haspopup="true">Viewer</summary>
+          <div class="nav-dropdown__panel" role="menu" aria-label="Viewer">
+            {% if request.endpoint == 'gantt' and current_date is defined and view is defined %}
+            <a href="{{ url_for('gantt', date=current_date.strftime('%Y-%m-%d'), view=view, machine=machine_filter|default('')) }}" class="nav-dropdown__link{% if request.endpoint == 'gantt' %} active{% endif %}" role="menuitem">Gantt Chart</a>
+            {% elif current_date is defined %}
+            <a href="{{ url_for('gantt', date=current_date.strftime('%Y-%m-%d'), view='monthly') }}" class="nav-dropdown__link{% if request.endpoint == 'gantt' %} active{% endif %}" role="menuitem">Gantt Chart</a>
+            {% else %}
+            <a href="{{ url_for('gantt') }}" class="nav-dropdown__link{% if request.endpoint == 'gantt' %} active{% endif %}" role="menuitem">Gantt Chart</a>
+            {% endif %}
+            <a href="{{ url_for('monthly_result_view', date=current_date.strftime('%Y-%m-%d')) if current_date is defined else url_for('monthly_result_view') }}" class="nav-dropdown__link{% if request.endpoint == 'monthly_result_view' %} active{% endif %}" role="menuitem">Monthly Result</a>
+            <a href="{{ url_for('psi_view', date=current_date.strftime('%Y-%m-%d')) if current_date is defined else url_for('psi_view') }}" class="nav-dropdown__link{% if request.endpoint == 'psi_view' %} active{% endif %}" role="menuitem">PSI Viewer</a>
+          </div>
+        </details>
 
-        {# PSI Viewer #}
-        {% if viewer_selected_customer_id != 'peb' %}
-        <a href="{{ url_for('psi_view') }}" class="{% if request.endpoint == 'psi_view' %}active{% endif %}">
-          PSI Viewer
-        </a>
-        {% endif %}
-        <a href="{{ url_for('monthly_result_view') }}" class="{% if request.endpoint == 'monthly_result_view' %}active{% endif %}">
-          Monthly Result
-        </a>
-
-        {# Import CSV #}
-        <a href="{{ url_for('upload') }}" class="{% if request.endpoint == 'upload' %}active{% endif %}">
-          Import CSV
-        </a>
-        <a href="{{ url_for('export_schedules_csv') }}" class="{% if request.endpoint == 'export_schedules_csv' %}active{% endif %}"
-           data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">
-          Export CSV
-        </a>
+        {% set import_nav_active = request.endpoint in ('upload', 'upload_input_instruction_psi', 'upload_output_instruction_psi') %}
+        <details class="nav-dropdown">
+          <summary class="nav-dropdown__summary{% if import_nav_active %} nav-dropdown__summary--active{% endif %}" aria-haspopup="true">Import</summary>
+          <div class="nav-dropdown__panel" role="menu" aria-label="Import">
+            <a href="{{ url_for('upload') }}" class="nav-dropdown__link{% if request.endpoint == 'upload' %} active{% endif %}" role="menuitem">Operation(Gantt/Mon Rst/PSI)</a>
+            <a href="{{ url_for('upload_input_instruction_psi') }}" class="nav-dropdown__link{% if request.endpoint == 'upload_input_instruction_psi' %} active{% endif %}" role="menuitem">Input Instruction (PSI)</a>
+            <a href="{{ url_for('upload_output_instruction_psi') }}" class="nav-dropdown__link{% if request.endpoint == 'upload_output_instruction_psi' %} active{% endif %}" role="menuitem">Output Instruction (PSI)</a>
+          </div>
+        </details>
+        {% set export_nav_active = request.endpoint == 'export_schedules_csv' %}
+        <details class="nav-dropdown">
+          <summary class="nav-dropdown__summary{% if export_nav_active %} nav-dropdown__summary--active{% endif %}" aria-haspopup="true">Export</summary>
+          <div class="nav-dropdown__panel" role="menu" aria-label="Export">
+            <a href="{{ url_for('export_schedules_csv') }}"
+               class="nav-dropdown__link{% if request.endpoint == 'export_schedules_csv' %} active{% endif %}"
+               role="menuitem"
+               data-export-csv data-export-filename="result.csv" data-export-url="{{ url_for('export_schedules_csv') }}">
+              Result
+            </a>
+          </div>
+        </details>
       </nav>
 
       {% if schedule_total is defined and schedule_total > 0 %}
@@ -241,6 +249,47 @@
       alert('ファイルの保存に失敗しました。');
     }
   });
+
+  /** Viewer / Import: close <details> submenu shortly after pointer leaves the whole control */
+  (function () {
+    var CLOSE_MS = 200;
+    function navDropdowns() {
+      return document.querySelectorAll('.nav-dropdown');
+    }
+    /* Click/tap outside (e.g. Gantt under a header gap) — not only mouseleave */
+    document.addEventListener(
+      'pointerdown',
+      function (e) {
+        if (e.button != null && e.button !== 0) return;
+        var t = e.target;
+        if (!(t instanceof Element)) return;
+        navDropdowns().forEach(function (details) {
+          if (!details.open) return;
+          if (details.contains(t)) return;
+          details.open = false;
+        });
+      },
+      true
+    );
+    navDropdowns().forEach(function (details) {
+      var hideTimer = null;
+      function clearHide() {
+        if (hideTimer) {
+          clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+      }
+      function scheduleHide() {
+        clearHide();
+        hideTimer = setTimeout(function () {
+          hideTimer = null;
+          details.open = false;
+        }, CLOSE_MS);
+      }
+      details.addEventListener('mouseenter', clearHide);
+      details.addEventListener('mouseleave', scheduleHide);
+    });
+  })();
 </script>
 
 {% block scripts %}{% endblock %}

@@ -7,7 +7,8 @@
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size: 12px;
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
 }
 .psi-table th,
 .psi-table td {
@@ -16,19 +17,31 @@
     vertical-align: top;
 }
 .psi-header {
-    background: #bce597; /* RGB(188,229,151) */
-    font-weight: 600;
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-weight: 400;
     text-align: center;
+    font-size: 10px;
+    padding: 8px 4px;
+    vertical-align: bottom;
     width: 90px;
     position: sticky;
     top: 0;
     z-index: 2;
+    position: sticky;
+    overflow: visible;
 }
 .psi-item {
-    width: 220px;
+    width: 140px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 .psi-type {
     width: 70px;
+}
+.psi-begbal {
+    width: 80px;
 }
 .psi-table .psi-item {
     position: sticky;
@@ -38,25 +51,34 @@
 }
 .psi-table .psi-type {
     position: sticky;
-    left: 220px;
+    left: 140px;
     z-index: 3;
     background: inherit;
 }
+.psi-table .psi-begbal {
+    position: static;
+}
 .psi-table th.psi-item,
-.psi-table th.psi-type {
+.psi-table th.psi-type,
+.psi-table th.psi-begbal {
     z-index: 4;
-    background: #bce597;
+    background: var(--surface2);
 }
 .psi-row-even {
     background: #ffffff;
 }
 .psi-row-odd {
-    background: #ddf2ca; /* RGB(221,242,202) */
+    background: rgb(243,255,243);
 }
 .psi-cell {
     white-space: pre-line;
     text-align: left;
     width: 90px;
+    border-right: 1px solid rgba(30,58,95,0.5);
+    font-weight: 400;
+}
+.psi-header:not(.psi-item):not(.psi-type):not(.psi-begbal) {
+    border-right: 1px solid rgba(30,58,95,0.5);
 }
 
 .psi-scroll {
@@ -76,6 +98,14 @@
     align-items: center;
     gap: 14px;
     flex-wrap: wrap;
+}
+.psi-zoom-wrap {
+    display: flex;
+    align-items: center;
+    margin-top: 6px;
+    padding-left: 10px;
+    margin-left: 2px;
+    border-left: 1px solid var(--border);
 }
 
 /* Export confirm popup */
@@ -116,26 +146,42 @@
     justify-content: flex-end;
     gap: 10px;
 }
+.psi-th-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -5px;
+    width: 10px;
+    bottom: 0;
+    cursor: col-resize;
+    z-index: 40;
+    background: transparent;
+    box-sizing: border-box;
+}
+.psi-th-resize-handle:hover {
+    background: rgba(0, 212, 255, 0.12);
+}
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
-    <div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <div class="nav-arrows" style="margin-top:6px;">
             <a href="{{ url_for('psi_view', date=prev_date) }}">← Prev</a>
             <span class="date-label">{{ start_date.strftime('%b %Y') }}</span>
             <a href="{{ url_for('psi_view', date=next_date) }}">Next →</a>
         </div>
+        <div class="psi-zoom-wrap">
+            <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
+                <span class="view-zoom-bar__label">Zoom</span>
+                <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-out" title="Zoom out">−</button>
+                <span class="view-zoom-bar__pct" id="psi-zoom-pct">100%</span>
+                <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-in" title="Zoom in">+</button>
+                <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-reset" title="Reset zoom">100%</button>
+            </div>
+        </div>
     </div>
     <div class="psi-page-actions">
-        <div class="view-zoom-bar view-zoom-bar--inline" aria-label="Table zoom">
-            <span class="view-zoom-bar__label">Zoom</span>
-            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-out" title="Zoom out">−</button>
-            <span class="view-zoom-bar__pct" id="psi-zoom-pct">100%</span>
-            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-in" title="Zoom in">+</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="psi-zoom-reset" title="Reset zoom">100%</button>
-        </div>
         <a href="{{ url_for('export_psi', date=psi_date) }}" class="btn btn-primary" id="psi-export-link">Export Excel</a>
     </div>
 </div>
@@ -164,8 +210,9 @@
                 <tr>
                     <th class="psi-header psi-item">Item</th>
                     <th class="psi-header psi-type">Type</th>
+                    <th class="psi-header psi-begbal">Beg Bal</th>
                     {% for d in day_labels %}
-                    <th class="psi-header">{{ d }}</th>
+                    <th class="psi-header">{{ d }}<span class="psi-th-resize-handle" role="separator" aria-label="Drag to zoom" title="Drag to zoom table"></span></th>
                     {% endfor %}
                 </tr>
             </thead>
@@ -179,6 +226,7 @@
                         <td class="psi-item" rowspan="3">{{ item.item }}</td>
                         {% endif %}
                         <td class="psi-type">{{ row.type }}</td>
+                        <td class="psi-begbal">{{ row.beg_bal }}</td>
                         {% for cell in row.cells %}
                         <td class="psi-cell">{{ cell }}</td>
                         {% endfor %}
@@ -237,6 +285,45 @@
         applyPsiZoom(z);
         // no-op: sticky header handled by native CSS behavior
     }
+    var psiColResize = null;
+    var psiColResizeRaf = null;
+    function endPsiColResize() {
+        if (psiColResizeRaf) {
+            cancelAnimationFrame(psiColResizeRaf);
+            psiColResizeRaf = null;
+        }
+        if (!psiColResize) return;
+        psiColResize = null;
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', onPsiColResizeMove);
+        document.removeEventListener('mouseup', onPsiColResizeEnd);
+    }
+    function onPsiColResizeMove(e) {
+        if (!psiColResize) return;
+        psiColResize.lastClientX = e.clientX;
+        if (psiColResizeRaf) return;
+        psiColResizeRaf = requestAnimationFrame(function() {
+            psiColResizeRaf = null;
+            if (!psiColResize) return;
+            var dx = psiColResize.lastClientX - psiColResize.startX;
+            var raw = psiColResize.z0 + dx / psiColResize.baseCell;
+            setPsiZoom(raw);
+        });
+    }
+    function onPsiColResizeEnd() {
+        endPsiColResize();
+    }
+    function onPsiColResizeStart(e) {
+        if (!e.target.closest('.psi-th-resize-handle')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (psiColResize) endPsiColResize();
+        psiColResize = { startX: e.clientX, z0: getPsiZoom(), baseCell: 90, lastClientX: e.clientX };
+        document.body.style.cursor = 'col-resize';
+        document.addEventListener('mousemove', onPsiColResizeMove);
+        document.addEventListener('mouseup', onPsiColResizeEnd);
+    }
+    document.addEventListener('mousedown', onPsiColResizeStart);
 
     var link = document.getElementById('psi-export-link');
     var overlay = document.getElementById('psi-export-overlay');

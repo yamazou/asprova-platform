@@ -31,6 +31,14 @@ from core.asprova_parser import (
     result_csv_export_headers,
     schedule_row_to_result_csv_cells,
 )
+from core.input_instruction_parser import (
+    detect_input_instruction_columns,
+    parse_input_instruction_row,
+)
+from core.output_instruction_parser import (
+    detect_output_instruction_columns,
+    parse_output_instruction_row,
+)
 from core.csv_loader import csv_dict_reader_from_bytes
 from core.sap_integrated_master import ensure_integrates_table
 
@@ -123,6 +131,7 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
     return {
         'id': r['id'],
         'machine': disp_m,
+        'machine_id': r['machine_id'] or '',
         'plan_machine': plan_machine,
         'order_id': r['order_id'] or '',
         'order_item_code': r['order_item_code'] or '',
@@ -335,6 +344,66 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN min_skill TEXT")
         if "qc_skill" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN qc_skill TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS psi_input_instructions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_code TEXT NOT NULL,
+                inst_time TEXT NOT NULL,
+                quantity REAL,
+                u_quantity REAL,
+                qty_fixed_level REAL,
+                qty_fixed_level_user_specified TEXT,
+                pegging_method TEXT,
+                object_id TEXT,
+                object_status_flag_ext TEXT,
+                flag_date TEXT,
+                operation_code TEXT,
+                source_filename TEXT,
+                uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS psi_input_instruction_uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                row_count INTEGER,
+                uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS psi_output_instructions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_code TEXT NOT NULL,
+                inst_time TEXT NOT NULL,
+                quantity REAL,
+                u_quantity REAL,
+                qty_fixed_level REAL,
+                qty_fixed_level_user_specified TEXT,
+                pegging_method TEXT,
+                object_id TEXT,
+                object_status_flag_ext TEXT,
+                flag_date TEXT,
+                operation_code TEXT,
+                source_filename TEXT,
+                uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS psi_output_instruction_uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                row_count INTEGER,
+                uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         ensure_integrates_table(conn)
         conn.commit()
     finally:
@@ -360,6 +429,23 @@ def get_earliest_schedule_date():
     row = conn.execute("SELECT MIN(substr(start_time, 1, 10)) AS d FROM schedules").fetchone()
     conn.close()
     return row["d"] if row and row["d"] else None
+
+
+def get_earliest_psi_instruction_date():
+    """Earliest inst_time date (YYYY-MM-DD) across PSI input/output instruction tables."""
+    conn = get_db()
+    dates = []
+    for tbl in ("psi_output_instructions", "psi_input_instructions"):
+        try:
+            row = conn.execute(
+                f"SELECT MIN(substr(inst_time, 1, 10)) AS d FROM {tbl}"
+            ).fetchone()
+            if row and row["d"]:
+                dates.append(row["d"])
+        except Exception:
+            pass
+    conn.close()
+    return min(dates) if dates else None
 
 
 @app.route('/')
@@ -485,6 +571,236 @@ def upload():
     conn.close()
     ctx['prior_upload_names_lower'] = [r['filename'].lower() for r in prior]
     return render_template('upload2.html', **ctx)
+
+
+@app.route('/upload/input-instruction-psi', methods=['GET', 'POST'])
+def upload_input_instruction_psi():
+    """Import Input Instruction (PSI) CSV (e.g. inputinst.csv) into psi_input_instructions."""
+    if request.method == 'POST':
+        ensure_db_schema()
+        uploaded_files = request.files.getlist('files')
+        candidates = [f for f in uploaded_files if f and f.filename and f.filename.strip() != '']
+        if not candidates:
+            flash('No file selected', 'error')
+            return redirect(request.url)
+
+        conn = get_db()
+        total_rows = 0
+        imported_files = []
+        skipped = []
+
+        for file in candidates:
+            if not allowed_file(file.filename):
+                skipped.append(f'{file.filename} (not CSV)')
+                continue
+            filename = secure_filename(file.filename)
+            try:
+                content_bytes = file.read()
+                reader, _, _ = csv_dict_reader_from_bytes(content_bytes)
+                headers = reader.fieldnames or []
+            except Exception:
+                skipped.append(f'{file.filename} (read error)')
+                continue
+
+            if not headers:
+                skipped.append(f'{file.filename} (empty or invalid)')
+                continue
+
+            mapping = detect_input_instruction_columns(headers)
+            if not mapping.get('item_code') or not mapping.get('inst_time'):
+                skipped.append(f'{file.filename} (not Input Instruction CSV — need item & time columns)')
+                continue
+
+            rows = list(reader)
+            count = 0
+            for row in rows:
+                rec = parse_input_instruction_row(row, mapping)
+                if not rec:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO psi_input_instructions (
+                        item_code, inst_time, quantity, u_quantity, qty_fixed_level,
+                        qty_fixed_level_user_specified, pegging_method, object_id,
+                        object_status_flag_ext, flag_date, operation_code, source_filename
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rec['item_code'],
+                        rec['inst_time'],
+                        rec['quantity'],
+                        rec['u_quantity'],
+                        rec['qty_fixed_level'],
+                        rec['qty_fixed_level_user_specified'],
+                        rec['pegging_method'],
+                        rec['object_id'],
+                        rec['object_status_flag_ext'],
+                        rec['flag_date'],
+                        rec['operation_code'],
+                        filename,
+                    ),
+                )
+                count += 1
+
+            conn.execute(
+                'INSERT INTO psi_input_instruction_uploads (filename, row_count) VALUES (?, ?)',
+                (filename, count),
+            )
+            total_rows += count
+            imported_files.append(filename)
+
+        conn.commit()
+        conn.close()
+
+        if skipped:
+            flash('Skipped: ' + '; '.join(skipped[:12]) + ('…' if len(skipped) > 12 else ''), 'warning')
+        if total_rows == 0:
+            flash('No Input Instruction rows imported from the selected file(s)', 'error')
+            return redirect(url_for('upload_input_instruction_psi'))
+        flash(
+            f'Successfully imported {total_rows} Input Instruction record(s) from {len(imported_files)} file(s): '
+            + ', '.join(imported_files[:8])
+            + ('…' if len(imported_files) > 8 else ''),
+            'success',
+        )
+        return redirect(url_for('upload_input_instruction_psi'))
+
+    ensure_db_schema()
+    conn = get_db()
+    try:
+        ii_total = conn.execute('SELECT COUNT(*) AS c FROM psi_input_instructions').fetchone()['c']
+    except Exception:
+        ii_total = 0
+    ii_uploads = conn.execute(
+        'SELECT * FROM psi_input_instruction_uploads ORDER BY uploaded_at DESC LIMIT 8'
+    ).fetchall()
+    prior = conn.execute(
+        'SELECT DISTINCT filename FROM psi_input_instruction_uploads ORDER BY filename'
+    ).fetchall()
+    conn.close()
+    return render_template(
+        'upload_input_instruction_psi.html',
+        ii_total=ii_total,
+        ii_uploads=ii_uploads,
+        prior_upload_names_lower=[
+            r['filename'].lower() for r in prior if r['filename']
+        ],
+    )
+
+
+@app.route('/upload/output-instruction-psi', methods=['GET', 'POST'])
+def upload_output_instruction_psi():
+    """Import Output Instruction (PSI) CSV (e.g. outputinst.csv) into psi_output_instructions."""
+    if request.method == 'POST':
+        ensure_db_schema()
+        uploaded_files = request.files.getlist('files')
+        candidates = [f for f in uploaded_files if f and f.filename and f.filename.strip() != '']
+        if not candidates:
+            flash('No file selected', 'error')
+            return redirect(request.url)
+
+        conn = get_db()
+        total_rows = 0
+        imported_files = []
+        skipped = []
+
+        for file in candidates:
+            if not allowed_file(file.filename):
+                skipped.append(f'{file.filename} (not CSV)')
+                continue
+            filename = secure_filename(file.filename)
+            try:
+                content_bytes = file.read()
+                reader, _, _ = csv_dict_reader_from_bytes(content_bytes)
+                headers = reader.fieldnames or []
+            except Exception:
+                skipped.append(f'{file.filename} (read error)')
+                continue
+
+            if not headers:
+                skipped.append(f'{file.filename} (empty or invalid)')
+                continue
+
+            mapping = detect_output_instruction_columns(headers)
+            if not mapping.get('item_code') or not mapping.get('inst_time'):
+                skipped.append(f'{file.filename} (not Output Instruction CSV — need item & time columns)')
+                continue
+
+            rows = list(reader)
+            count = 0
+            for row in rows:
+                rec = parse_output_instruction_row(row, mapping)
+                if not rec:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO psi_output_instructions (
+                        item_code, inst_time, quantity, u_quantity, qty_fixed_level,
+                        qty_fixed_level_user_specified, pegging_method, object_id,
+                        object_status_flag_ext, flag_date, operation_code, source_filename
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        rec['item_code'],
+                        rec['inst_time'],
+                        rec['quantity'],
+                        rec['u_quantity'],
+                        rec['qty_fixed_level'],
+                        rec['qty_fixed_level_user_specified'],
+                        rec['pegging_method'],
+                        rec['object_id'],
+                        rec['object_status_flag_ext'],
+                        rec['flag_date'],
+                        rec['operation_code'],
+                        filename,
+                    ),
+                )
+                count += 1
+
+            conn.execute(
+                'INSERT INTO psi_output_instruction_uploads (filename, row_count) VALUES (?, ?)',
+                (filename, count),
+            )
+            total_rows += count
+            imported_files.append(filename)
+
+        conn.commit()
+        conn.close()
+
+        if skipped:
+            flash('Skipped: ' + '; '.join(skipped[:12]) + ('…' if len(skipped) > 12 else ''), 'warning')
+        if total_rows == 0:
+            flash('No Output Instruction rows imported from the selected file(s)', 'error')
+            return redirect(url_for('upload_output_instruction_psi'))
+        flash(
+            f'Successfully imported {total_rows} Output Instruction record(s) from {len(imported_files)} file(s): '
+            + ', '.join(imported_files[:8])
+            + ('…' if len(imported_files) > 8 else ''),
+            'success',
+        )
+        return redirect(url_for('upload_output_instruction_psi'))
+
+    ensure_db_schema()
+    conn = get_db()
+    try:
+        oi_total = conn.execute('SELECT COUNT(*) AS c FROM psi_output_instructions').fetchone()['c']
+    except Exception:
+        oi_total = 0
+    oi_uploads = conn.execute(
+        'SELECT * FROM psi_output_instruction_uploads ORDER BY uploaded_at DESC LIMIT 8'
+    ).fetchall()
+    prior = conn.execute(
+        'SELECT DISTINCT filename FROM psi_output_instruction_uploads ORDER BY filename'
+    ).fetchall()
+    conn.close()
+    return render_template(
+        'upload_output_instruction_psi.html',
+        oi_total=oi_total,
+        oi_uploads=oi_uploads,
+        prior_upload_names_lower=[
+            r['filename'].lower() for r in prior if r['filename']
+        ],
+    )
 
 
 @app.route('/export/schedules.csv')
@@ -655,10 +971,14 @@ def gantt():
         '''
         SELECT m AS machine_name FROM (
             SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
-            WHERE machine_name IS NOT NULL AND TRIM(machine_name) <> ''
+            WHERE machine_name IS NOT NULL
+              AND TRIM(machine_name) <> ''
+              AND TRIM(machine_name) <> 'DefaultInventoryResource'
             UNION
             SELECT DISTINCT TRIM(actual_resource) AS m FROM schedules
-            WHERE actual_resource IS NOT NULL AND TRIM(actual_resource) <> ''
+            WHERE actual_resource IS NOT NULL
+              AND TRIM(actual_resource) <> ''
+              AND TRIM(actual_resource) <> 'DefaultInventoryResource'
         )
         ORDER BY m
         '''
@@ -1169,70 +1489,18 @@ def export_monthly():
     psi_fill_even = PatternFill('solid', fgColor='FFFFFF')    # white
     psi_fill_odd = PatternFill('solid', fgColor='DDF2CA')     # RGB(221,242,202)
 
-    # Build day labels once
-    day_labels = [f"{d.day}/{d.strftime('%b')}" for d in day_list]
+    # Sheet 3: same aggregates as web PSI (instructions, not schedules).
+    (
+        _,
+        ordered_items_psi,
+        _,
+        supply_qty_psi,
+        agg_psi,
+        demand_qty_psi,
+        demand_agg_psi,
+    ) = _build_psi_data_for_month(start_date, end_date)
+    day_labels = [_format_md_weekday_en(d) for d in day_list]
 
-    # Helper to parse item code like ItemA-10, ItemA-20, ItemA, etc.
-    def split_item_code(code: str):
-        if not code:
-            return None, None
-        if '-' in code:
-            base, suffix = code.rsplit('-', 1)
-            try:
-                num = int(suffix)
-                return base, num
-            except ValueError:
-                return code, None
-        return code, None
-
-    # Map items into families and determine ordering + next-stage mapping
-    families = {}
-    for it in items:
-        base, num = split_item_code(it)
-        if base is None:
-            continue
-        families.setdefault(base, []).append((it, num))
-
-    next_item_for = {}
-    ordered_items = []
-    for base in sorted(families.keys()):
-        variants = families[base]
-        numbered = [v for v in variants if v[1] is not None]
-        base_codes = [v for v in variants if v[1] is None]
-        numbered.sort(key=lambda x: x[1] if x[1] is not None else -1)
-        numbered_codes = [code for code, _ in numbered]
-        base_code = base if base in items else (base_codes[0][0] if base_codes else None)
-
-        # Order within family: ItemA-10, ItemA-20, ..., ItemA-40, ItemA
-        family_order = [code for code, _ in numbered]
-        if base_code and base_code not in family_order:
-            family_order.append(base_code)
-        ordered_items.extend(family_order)
-
-        # Next-stage mapping for non-final items
-        for code, num in numbered:
-            if num is None:
-                continue
-            candidate = f"{base}-{num + 10}"
-            if candidate in items:
-                next_item_for[code] = candidate
-            elif base_code and base_code in items:
-                next_item_for[code] = base_code
-
-        # NOTE: base (final) item has no downstream consumer in current model,
-        # so we intentionally do NOT assign next_item_for[base_code].
-
-    # Include any items that didn't fit the family parsing, in name order
-    remaining = [it for it in items if it not in ordered_items]
-    ordered_items.extend(sorted(remaining))
-
-    # Pre-aggregate numeric supply per (item, day)
-    supply_qty = defaultdict(float)
-    for (item_key, day, m), qty in agg.items():
-        if qty:
-            supply_qty[(item_key, day)] += qty
-
-    # Header: Item, Type, days...
     ws_psi.append(['Item', 'Type'] + day_labels)
     for col_idx in range(1, 3 + len(day_list)):
         cell = ws_psi.cell(row=1, column=col_idx)
@@ -1241,35 +1509,27 @@ def export_monthly():
         cell.border = thin_border
         cell.alignment = center
 
-    # Rows: per item, 3 rows (Supply, Demand, Stock) in ordered sequence
-    for item_key in ordered_items:
+    for item_key in ordered_items_psi:
         stock_prev = 0.0
         for row_type in ('Supply', 'Demand', 'Stock'):
             row_vals = [item_key, row_type]
             for d in day_list:
                 day_date = d.date()
                 if row_type == 'Supply':
-                    # Text with machine and quantity (per machine), one line per machine
                     parts = []
-                    for (it, day, m), qty in agg.items():
+                    for (it, day, m), qty in agg_psi.items():
                         if it == item_key and day == day_date and qty:
                             parts.append(f'{m}: {qty:g}')
                     cell_val = '\n'.join(parts) if parts else ''
                 elif row_type == 'Demand':
-                    next_item = next_item_for.get(item_key)
-                    if not next_item:
-                        cell_val = ''
-                    else:
-                        parts = []
-                        for (it, day, m), qty in agg.items():
-                            if it == next_item and day == day_date and qty:
-                                parts.append(f'{m}: {qty:g}')
-                        cell_val = '\n'.join(parts) if parts else ''
-                else:  # Stock
-                    # Compute numeric from previous stock + supply - demand
-                    s = supply_qty.get((item_key, day_date), 0.0)
-                    next_item = next_item_for.get(item_key)
-                    d_qty = supply_qty.get((next_item, day_date), 0.0) if next_item else 0.0
+                    parts = []
+                    for (it, day, m), qty in demand_agg_psi.items():
+                        if it == item_key and day == day_date and qty and float(qty) > 0:
+                            parts.append(f'{m}: {qty:g}')
+                    cell_val = '\n'.join(parts) if parts else ''
+                else:
+                    s = supply_qty_psi.get((item_key, day_date), 0.0)
+                    d_qty = demand_qty_psi.get((item_key, day_date), 0.0)
                     stock = stock_prev + s - d_qty
                     stock_prev = stock
                     cell_val = stock if stock != 0 else ''
@@ -1303,6 +1563,126 @@ def export_monthly():
     buf.seek(0)
 
     filename = f'monthly_plan_{start_date.strftime("%Y%m")}.xlsx'
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+@app.route('/export_monthly_result')
+def export_monthly_result():
+    """
+    Export the Monthly Result grid (Line × Qty/WH × calendar days) for the selected month.
+    Query param: date=YYYY-MM-DD (any day in the month; defaults like monthly-result view).
+    """
+    if Workbook is None:
+        flash('Excel export requires openpyxl to be installed (pip install openpyxl).', 'error')
+        return redirect(url_for('monthly_result_view'))
+
+    if 'date' in request.args:
+        date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    else:
+        date_str = get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    try:
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        current_date = datetime.now()
+    resource_filter = (request.args.get('machine', '') or '').strip()
+
+    start_date = current_date.replace(day=1)
+    if start_date.month == 12:
+        end_date = start_date.replace(year=start_date.year + 1, month=1)
+    else:
+        end_date = start_date.replace(month=start_date.month + 1)
+
+    day_list, line_items = _build_monthly_result_grid(start_date, end_date, resource_filter)
+    day_labels = [_format_md_weekday_en(d) for d in day_list]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f'{start_date.strftime("%Y-%m")}_MR'
+    ws.sheet_view.zoomScale = 80
+    ws.sheet_view.zoomScaleNormal = 80
+
+    header_font = Font(name='Meiryo', bold=True)
+    default_font = Font(name='Meiryo')
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin'),
+    )
+    center = Alignment(horizontal='center', vertical='center')
+    header_fill = PatternFill('solid', fgColor='BCE597')
+    fill_even = PatternFill('solid', fgColor='FFFFFF')
+    fill_odd = PatternFill('solid', fgColor='DDF2CA')
+
+    ws.append(['Resource', 'Type'] + day_labels)
+    for col_idx in range(1, 3 + len(day_list)):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = center
+
+    row_idx = 2
+    for group_i, item in enumerate(line_items):
+        fill = fill_even if group_i % 2 == 0 else fill_odd
+        if len(day_labels) > 0:
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx + 1, end_column=1)
+        c_line = ws.cell(row=row_idx, column=1)
+        c_line.value = item['line_name']
+        c_line.font = default_font
+        c_line.border = thin_border
+        c_line.alignment = Alignment(horizontal='left', vertical='center')
+        c_line.fill = fill
+
+        c_qty_lbl = ws.cell(row=row_idx, column=2)
+        c_qty_lbl.value = 'Qty'
+        c_qty_lbl.font = default_font
+        c_qty_lbl.border = thin_border
+        c_qty_lbl.alignment = center
+        c_qty_lbl.fill = fill
+
+        c_wh_lbl = ws.cell(row=row_idx + 1, column=2)
+        c_wh_lbl.value = 'WH'
+        c_wh_lbl.font = default_font
+        c_wh_lbl.border = thin_border
+        c_wh_lbl.alignment = center
+        c_wh_lbl.fill = fill
+
+        for di, qv in enumerate(item['qty_cells']):
+            col = 3 + di
+            cell = ws.cell(row=row_idx, column=col)
+            cell.value = qv
+            cell.font = default_font
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.fill = fill
+
+        for di, hv in enumerate(item['wh_cells']):
+            col = 3 + di
+            cell = ws.cell(row=row_idx + 1, column=col)
+            cell.value = hv
+            cell.font = default_font
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.fill = fill
+
+        row_idx += 2
+
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 10
+    for idx in range(len(day_list)):
+        col_letter = ws.cell(row=1, column=3 + idx).column_letter
+        ws.column_dimensions[col_letter].width = 11
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f'monthly_result_{start_date.strftime("%Y%m")}.xlsx'
     return send_file(
         buf,
         as_attachment=True,
@@ -1348,12 +1728,17 @@ def sample_csv():
 def psi_view():
     """
     Web PSI viewer.
-    Shows, for a given month, per primary output item:
-    - Supply (machine + qty per day)
-    - Demand (next-stage item's supply)
-    - Stock (running inventory)
+    Shows, for a given month, per item_code from instruction uploads:
+    - Supply: psi_output_instructions (cell lines keyed by operation_code)
+    - Demand: psi_input_instructions (same)
+    - Stock: running balance (Supply − Demand)
     """
-    date_str = request.args.get('date') or get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    date_str = (
+        request.args.get('date')
+        or get_earliest_psi_instruction_date()
+        or get_earliest_schedule_date()
+        or datetime.now().strftime('%Y-%m-%d')
+    )
     try:
         current_date = datetime.strptime(date_str, '%Y-%m-%d')
     except ValueError:
@@ -1373,14 +1758,18 @@ def psi_view():
     else:
         next_start = start_date.replace(month=start_date.month + 1, day=1)
 
-    day_list, ordered_items, next_item_for, supply_qty, agg = _build_psi_data_for_month(start_date, end_date)
-    day_labels = [f"{d.day}/{d.strftime('%b')}" for d in day_list]
+    day_list, ordered_items, _, supply_qty, agg, demand_qty, demand_agg = _build_psi_data_for_month(
+        start_date, end_date
+    )
+    beg_bal_by_item = _build_psi_begin_balances(start_date)
+    day_labels = [_format_md_weekday_en(d) for d in day_list]
 
     # Build PSI rows for template
     psi_items = []
     for item_key in ordered_items:
         rows_for_item = []
-        stock_prev = 0.0
+        beg_bal = float(beg_bal_by_item.get(item_key, 0.0))
+        stock_prev = beg_bal
         for row_type in ('Supply', 'Demand', 'Stock'):
             cells = []
             for d in day_list:
@@ -1392,24 +1781,19 @@ def psi_view():
                             parts.append(f'{m}: {qty:g}')
                     cell_val = '\n'.join(parts) if parts else ''
                 elif row_type == 'Demand':
-                    next_item = next_item_for.get(item_key)
-                    if not next_item:
-                        cell_val = ''
-                    else:
-                        parts = []
-                        for (it, day, m), qty in agg.items():
-                            if it == next_item and day == day_date and qty:
-                                parts.append(f'{m}: {qty:g}')
-                        cell_val = '\n'.join(parts) if parts else ''
+                    parts = []
+                    for (it, day, m), qty in demand_agg.items():
+                        if it == item_key and day == day_date and qty and float(qty) > 0:
+                            parts.append(f'{m}: {qty:g}')
+                    cell_val = '\n'.join(parts) if parts else ''
                 else:  # Stock
                     s = supply_qty.get((item_key, day_date), 0.0)
-                    next_item = next_item_for.get(item_key)
-                    d_qty = supply_qty.get((next_item, day_date), 0.0) if next_item else 0.0
+                    d_qty = demand_qty.get((item_key, day_date), 0.0)
                     stock = stock_prev + s - d_qty
                     stock_prev = stock
-                    cell_val = '' if stock == 0 else f'{stock:g}'
+                    cell_val = f'{stock:g}'
                 cells.append(cell_val)
-            rows_for_item.append({'type': row_type, 'cells': cells})
+            rows_for_item.append({'type': row_type, 'beg_bal': f'{beg_bal:g}' if row_type == 'Stock' else '', 'cells': cells})
         psi_items.append({'item': item_key, 'rows': rows_for_item})
 
     return render_template(
@@ -1417,6 +1801,7 @@ def psi_view():
         day_labels=day_labels,
         psi_items=psi_items,
         month_label=start_date.strftime('%Y-%m'),
+        current_date=current_date,
         psi_date=start_date.strftime('%Y-%m-%d'),
         start_date=start_date,
         prev_date=prev_start.strftime('%Y-%m-%d'),
@@ -1434,9 +1819,392 @@ def _parse_month_ym(ym: str) -> tuple[str, datetime, datetime]:
     return raw, month_start, month_end
 
 
+def _monthly_result_wh_counts_for_calendar_day(day: datetime) -> bool:
+    """
+    Monthly Result WH is split by calendar day. Weekends are treated as non-working:
+    no WH is accumulated on Saturday/Sunday (avoids 24h per weekend day when ops span weeks).
+    """
+    return day.weekday() < 5
+
+
+def _format_md_weekday_en(d: datetime) -> str:
+    wd = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')[d.weekday()]
+    return f"{d.month}/{d.day}({wd})"
+
+
+def _build_resource_operation_detail_rows(
+    start_date: datetime, end_date: datetime, resource_filter: str
+) -> list[dict]:
+    resource_filter = (resource_filter or "").strip()
+    if not resource_filter:
+        return []
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            '''
+            WITH base AS (
+              SELECT
+                TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS resource_name,
+                item_id,
+                quantity,
+                actual_quantity,
+                status,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_start
+                  ELSE start_time
+                END AS start_ts,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_end
+                  ELSE end_time
+                END AS end_ts
+              FROM schedules
+              WHERE TRIM(COALESCE(item_id, '')) <> ''
+                AND TRIM(COALESCE(machine_id, '')) NOT IN ('DefaultInventoryResource', 'Purchase')
+            )
+            SELECT item_id, quantity, actual_quantity, status, start_ts
+            FROM base
+            WHERE resource_name = ?
+              AND start_ts IS NOT NULL
+              AND end_ts IS NOT NULL
+              AND start_ts < ?
+              AND end_ts > ?
+            ORDER BY start_ts, item_id
+            ''',
+            (
+                resource_filter,
+                end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                start_date.strftime('%Y-%m-%d %H:%M:%S'),
+            ),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: list[dict] = []
+    for r in rows:
+        st = datetime.strptime(str(r['start_ts']), '%Y-%m-%d %H:%M:%S')
+        aq = r['actual_quantity']
+        qty_disp = aq if aq is not None else r['quantity']
+        planned_qty_disp = r['quantity'] if aq is not None else None
+        out.append(
+            {
+                "start_md": f"{st.month}/{st.day}",
+                "item_id": str(r['item_id'] or '').strip() or '—',
+                "quantity": qty_disp,
+                "status": str(r['status'] or '').strip() or '—',
+                "planned_quantity": planned_qty_disp,
+            }
+        )
+    return out
+
+
+def _build_monthly_result_grid(
+    start_date: datetime, end_date: datetime, resource_filter: str = ""
+) -> tuple[list[datetime], list[dict]]:
+    """
+    Same aggregation as the Monthly Result page: per line, Qty on operation start day
+    and WH (hours) spread across [start_ts, end_ts) clipped to the month.
+    WH is not counted on Saturday/Sunday (non-working calendar days).
+    """
+    conn = get_db()
+    try:
+        sql = """
+            WITH base AS (
+              SELECT
+                TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS line_name,
+                work_user_res_order,
+                CASE
+                  WHEN actual_quantity IS NOT NULL THEN actual_quantity
+                  WHEN quantity IS NOT NULL THEN quantity
+                  ELSE 0
+                END AS qty_val,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_start
+                  ELSE start_time
+                END AS start_ts,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_end
+                  ELSE end_time
+                END AS end_ts
+              FROM schedules
+              WHERE TRIM(COALESCE(item_id, '')) <> ''
+                AND TRIM(COALESCE(machine_id, '')) NOT IN ('DefaultInventoryResource', 'Purchase')
+            )
+            SELECT
+              line_name,
+              work_user_res_order,
+              qty_val,
+              start_ts,
+              end_ts
+            FROM base
+            WHERE start_ts IS NOT NULL
+              AND end_ts IS NOT NULL
+              AND start_ts < ?
+              AND end_ts > ?
+              AND (? = '' OR line_name = ?)
+            ORDER BY line_name, start_ts
+        """
+        resource_filter = (resource_filter or "").strip()
+        params = (
+            end_date.strftime('%Y-%m-%d %H:%M:%S'),
+            start_date.strftime('%Y-%m-%d %H:%M:%S'),
+            resource_filter,
+            resource_filter,
+        )
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    day_list: list[datetime] = []
+    cur = start_date
+    while cur < end_date:
+        day_list.append(cur)
+        cur += timedelta(days=1)
+    day_keys = [d.strftime('%Y-%m-%d') for d in day_list]
+
+    qty_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
+    wh_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
+    op_count_by_line: dict[str, int] = defaultdict(int)
+    lines: set[str] = set()
+    min_wro_by_line: dict[str, float] = {}
+    for row in rows:
+        line_name = str(row['line_name'] or '').strip() or 'Unknown'
+        lines.add(line_name)
+        op_count_by_line[line_name] += 1
+        wro = _parse_work_user_res_order_val(row['work_user_res_order'])
+        prev_min = min_wro_by_line.get(line_name)
+        if prev_min is None or wro < prev_min:
+            min_wro_by_line[line_name] = wro
+        qty = float(row['qty_val'] or 0)
+        start_ts = datetime.strptime(str(row['start_ts']), '%Y-%m-%d %H:%M:%S')
+        end_ts = datetime.strptime(str(row['end_ts']), '%Y-%m-%d %H:%M:%S')
+        day_key = start_ts.strftime('%Y-%m-%d')
+        if day_key in day_keys:
+            qty_by_line_day[(line_name, day_key)] += qty
+
+        d0 = datetime(start_ts.year, start_ts.month, start_ts.day)
+        if d0 < start_date:
+            d0 = start_date
+        while d0 < end_date and d0 < end_ts:
+            d1 = d0 + timedelta(days=1)
+            seg_s = max(start_ts, d0)
+            seg_e = min(end_ts, d1, end_date)
+            if seg_e > seg_s and _monthly_result_wh_counts_for_calendar_day(d0):
+                wh_by_line_day[(line_name, d0.strftime('%Y-%m-%d'))] += (seg_e - seg_s).total_seconds() / 3600.0
+            d0 = d1
+
+    line_items: list[dict] = []
+    lines_ordered = sorted(
+        lines,
+        key=lambda ln: (min_wro_by_line.get(ln, float('inf')), ln),
+    )
+    for line_name in lines_ordered:
+        qty_cells = []
+        wh_cells = []
+        for k in day_keys:
+            q = qty_by_line_day.get((line_name, k), 0.0)
+            h = wh_by_line_day.get((line_name, k), 0.0)
+            qty_cells.append(
+                ""
+                if q == 0
+                else (f"{q:,.0f}" if abs(q - round(q)) < 1e-9 else f"{q:,.3f}".rstrip('0').rstrip('.'))
+            )
+            wh_cells.append("" if h == 0 else f"{h:,.2f}".rstrip('0').rstrip('.'))
+        line_items.append(
+            {
+                "line_name": line_name,
+                "op_count": op_count_by_line.get(line_name, 0),
+                "qty_cells": qty_cells,
+                "wh_cells": wh_cells,
+            }
+        )
+
+    return day_list, line_items
+
+
+def _build_monthly_result_resource_detail_rows(
+    start_date: datetime, end_date: datetime, resource_filter: str
+) -> list[dict]:
+    out = _build_resource_operation_detail_rows(start_date, end_date, resource_filter)
+    for i, row in enumerate(out):
+        if i > 0 and out[i - 1]["start_md"] == row["start_md"]:
+            row["start_rowspan"] = 0
+        else:
+            span = 1
+            while i + span < len(out) and out[i + span]["start_md"] == row["start_md"]:
+                span += 1
+            row["start_rowspan"] = span
+
+        if (
+            i > 0
+            and out[i - 1]["start_md"] == row["start_md"]
+            and out[i - 1]["item_id"] == row["item_id"]
+        ):
+            row["item_rowspan"] = 0
+        else:
+            span = 1
+            while (
+                i + span < len(out)
+                and out[i + span]["start_md"] == row["start_md"]
+                and out[i + span]["item_id"] == row["item_id"]
+            ):
+                span += 1
+            row["item_rowspan"] = span
+    return out
+
+
+@app.route('/export_gantt_resource_detail')
+def export_gantt_resource_detail():
+    if Workbook is None:
+        flash('Excel export requires openpyxl to be installed (pip install openpyxl).', 'error')
+        return redirect(url_for('gantt'))
+    view = request.args.get('view', 'monthly')
+    machine_filter = (request.args.get('machine', '') or '').strip()
+    date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        current_date = datetime.now()
+    if view in ('weekly', '2week', '3week'):
+        start_date = current_date - timedelta(days=current_date.weekday())
+        span_days = {'weekly': 7, '2week': 14, '3week': 21}[view]
+        end_date = start_date + timedelta(days=span_days)
+    elif view == 'monthly':
+        start_date = current_date.replace(day=1)
+        if start_date.month == 12:
+            end_date = start_date.replace(year=start_date.year + 1, month=1)
+        else:
+            end_date = start_date.replace(month=start_date.month + 1)
+    else:
+        start_date = current_date
+        end_date = current_date + timedelta(days=1)
+    rows = _build_resource_operation_detail_rows(start_date, end_date, machine_filter)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Resource_Detail'
+    header_font = Font(name='Meiryo', bold=True)
+    default_font = Font(name='Meiryo')
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin'),
+    )
+    center = Alignment(horizontal='center', vertical='center')
+    header_fill = PatternFill('solid', fgColor='76E597')
+
+    ws.append(['start (M/D)', 'item_id', 'quantity', 'status', 'planned quantity'])
+    for col_idx in range(1, 6):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = header_font
+        c.fill = header_fill
+        c.border = thin_border
+        c.alignment = center
+
+    for r in rows:
+        ws.append(
+            [
+                r['start_md'],
+                r['item_id'],
+                r['quantity'] if r['quantity'] is not None else '—',
+                r['status'],
+                r['planned_quantity'] if r['planned_quantity'] is not None else '—',
+            ]
+        )
+    for row_idx in range(2, ws.max_row + 1):
+        for col_idx in range(1, 6):
+            c = ws.cell(row=row_idx, column=col_idx)
+            c.font = default_font
+            c.border = thin_border
+            c.alignment = center
+    for i, w in enumerate((14, 20, 14, 14, 18), start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_resource = ''.join(c if c.isalnum() else '_' for c in (machine_filter or 'resource'))
+    filename = f'gantt_resource_detail_{safe_resource}_{start_date.strftime("%Y%m%d")}.xlsx'
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+@app.route('/export_monthly_result_resource_detail')
+def export_monthly_result_resource_detail():
+    if Workbook is None:
+        flash('Excel export requires openpyxl to be installed (pip install openpyxl).', 'error')
+        return redirect(url_for('monthly_result_view'))
+    date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    machine_filter = (request.args.get('machine', '') or '').strip()
+    try:
+        current_date = datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        current_date = datetime.now()
+    start_date = current_date.replace(day=1)
+    if start_date.month == 12:
+        end_date = start_date.replace(year=start_date.year + 1, month=1)
+    else:
+        end_date = start_date.replace(month=start_date.month + 1)
+    rows = _build_monthly_result_resource_detail_rows(start_date, end_date, machine_filter)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Resource_Detail'
+    header_font = Font(name='Meiryo', bold=True)
+    default_font = Font(name='Meiryo')
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin'),
+    )
+    center = Alignment(horizontal='center', vertical='center')
+    header_fill = PatternFill('solid', fgColor='76E597')
+
+    ws.append(['start (M/D)', 'item_id', 'quantity', 'status', 'planned quantity'])
+    for col_idx in range(1, 6):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = header_font
+        c.fill = header_fill
+        c.border = thin_border
+        c.alignment = center
+
+    for r in rows:
+        ws.append(
+            [
+                r['start_md'],
+                r['item_id'],
+                r['quantity'] if r['quantity'] is not None else '—',
+                r['status'],
+                r['planned_quantity'] if r['planned_quantity'] is not None else '—',
+            ]
+        )
+    for row_idx in range(2, ws.max_row + 1):
+        for col_idx in range(1, 6):
+            c = ws.cell(row=row_idx, column=col_idx)
+            c.font = default_font
+            c.border = thin_border
+            c.alignment = center
+    for i, w in enumerate((14, 20, 14, 14, 18), start=1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_resource = ''.join(c if c.isalnum() else '_' for c in (machine_filter or 'resource'))
+    filename = f'monthly_resource_detail_{safe_resource}_{start_date.strftime("%Y%m")}.xlsx'
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
 @app.route('/monthly-result')
 def monthly_result_view():
     view = 'monthly'
+    resource_filter = (request.args.get('machine', '') or '').strip()
     if 'date' in request.args:
         date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
     else:
@@ -1461,100 +2229,22 @@ def monthly_result_view():
     prev_date = prev_start.strftime('%Y-%m-%d')
     next_date = next_start.strftime('%Y-%m-%d')
 
+    day_list, line_items = _build_monthly_result_grid(start_date, end_date, resource_filter)
+    detail_rows = _build_monthly_result_resource_detail_rows(start_date, end_date, resource_filter)
     conn = get_db()
     try:
-        sql = """
-            WITH base AS (
-              SELECT
-                TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS line_name,
-                work_user_res_order,
-                CASE
-                  WHEN actual_quantity IS NOT NULL THEN actual_quantity
-                  WHEN quantity IS NOT NULL THEN quantity
-                  ELSE 0
-                END AS qty_val,
-                CASE
-                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_start
-                  ELSE start_time
-                END AS start_ts,
-                CASE
-                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_end
-                  ELSE end_time
-                END AS end_ts
-              FROM schedules
-              WHERE TRIM(COALESCE(item_id, '')) <> ''
-            )
-            SELECT
-              line_name,
-              work_user_res_order,
-              qty_val,
-              start_ts,
-              end_ts
-            FROM base
-            WHERE start_ts IS NOT NULL
-              AND end_ts IS NOT NULL
-              AND start_ts < ?
-              AND end_ts > ?
-            ORDER BY line_name, start_ts
-        """
-        params = (
-            end_date.strftime('%Y-%m-%d %H:%M:%S'),
-            start_date.strftime('%Y-%m-%d %H:%M:%S'),
-        )
-        rows = conn.execute(sql, params).fetchall()
+        resources_raw = conn.execute(
+            '''
+            SELECT DISTINCT TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS resource_name
+            FROM schedules
+            WHERE TRIM(COALESCE(item_id, '')) <> ''
+              AND TRIM(COALESCE(machine_id, '')) NOT IN ('DefaultInventoryResource', 'Purchase')
+            ORDER BY resource_name
+            '''
+        ).fetchall()
     finally:
         conn.close()
-
-    day_list: list[datetime] = []
-    cur = start_date
-    while cur < end_date:
-        day_list.append(cur)
-        cur += timedelta(days=1)
-    day_keys = [d.strftime('%Y-%m-%d') for d in day_list]
-
-    qty_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
-    wh_by_line_day: dict[tuple[str, str], float] = defaultdict(float)
-    lines: set[str] = set()
-    min_wro_by_line: dict[str, float] = {}
-    for row in rows:
-        line_name = str(row['line_name'] or '').strip() or 'Unknown'
-        lines.add(line_name)
-        wro = _parse_work_user_res_order_val(row['work_user_res_order'])
-        prev_min = min_wro_by_line.get(line_name)
-        if prev_min is None or wro < prev_min:
-            min_wro_by_line[line_name] = wro
-        qty = float(row['qty_val'] or 0)
-        start_ts = datetime.strptime(str(row['start_ts']), '%Y-%m-%d %H:%M:%S')
-        end_ts = datetime.strptime(str(row['end_ts']), '%Y-%m-%d %H:%M:%S')
-        day_key = start_ts.strftime('%Y-%m-%d')
-        if day_key in day_keys:
-            qty_by_line_day[(line_name, day_key)] += qty
-
-        d0 = datetime(start_ts.year, start_ts.month, start_ts.day)
-        if d0 < start_date:
-            d0 = start_date
-        while d0 < end_date and d0 < end_ts:
-            d1 = d0 + timedelta(days=1)
-            seg_s = max(start_ts, d0)
-            seg_e = min(end_ts, d1, end_date)
-            if seg_e > seg_s:
-                wh_by_line_day[(line_name, d0.strftime('%Y-%m-%d'))] += (seg_e - seg_s).total_seconds() / 3600.0
-            d0 = d1
-
-    line_items = []
-    lines_ordered = sorted(
-        lines,
-        key=lambda ln: (min_wro_by_line.get(ln, float('inf')), ln),
-    )
-    for line_name in lines_ordered:
-        qty_cells = []
-        wh_cells = []
-        for k in day_keys:
-            q = qty_by_line_day.get((line_name, k), 0.0)
-            h = wh_by_line_day.get((line_name, k), 0.0)
-            qty_cells.append("" if q == 0 else (f"{q:,.0f}" if abs(q - round(q)) < 1e-9 else f"{q:,.3f}".rstrip('0').rstrip('.')))
-            wh_cells.append("" if h == 0 else f"{h:,.2f}".rstrip('0').rstrip('.'))
-        line_items.append({"line_name": line_name, "qty_cells": qty_cells, "wh_cells": wh_cells})
+    resources = [str(r['resource_name'] or '').strip() for r in resources_raw if str(r['resource_name'] or '').strip()]
 
     return render_template(
         'monthly_result.html',
@@ -1564,22 +2254,54 @@ def monthly_result_view():
         end_date=end_date,
         prev_date=prev_date,
         next_date=next_date,
-        day_labels=[f"{d.day}/{d.strftime('%b')}" for d in day_list],
+        day_labels=[_format_md_weekday_en(d) for d in day_list],
         line_items=line_items,
-        source_name='schedule.db',
+        detail_rows=detail_rows,
+        resources=resources,
+        machine_filter=resource_filter,
     )
 
 
 def _build_psi_data_for_month(start_date, end_date):
-    """Build PSI structures (ordered_items, next_item_for, supply_qty, agg, day_list) for a month. Used by psi_view and export_psi."""
+    """
+    Build PSI structures for a month from instruction uploads.
+
+    Supply: psi_output_instructions aggregated by (item_code, calendar day,
+    machine_name). Demand: psi_input_instructions the same way.
+    The machine_name is resolved from schedules by operation_code.
+    """
+    start_s = start_date.strftime('%Y-%m-%d')
+    end_s = end_date.strftime('%Y-%m-%d')
+
     conn = get_db()
-    rows = conn.execute(
+    out_rows = conn.execute(
         '''
-        SELECT * FROM schedules
-        WHERE start_time >= ? AND start_time < ?
-        ORDER BY machine_name, start_time
+        SELECT item_code, inst_time, quantity, operation_code
+        FROM psi_output_instructions
+        WHERE inst_time >= ? AND inst_time < ?
         ''',
-        (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')),
+        (start_s, end_s),
+    ).fetchall()
+    in_rows = conn.execute(
+        '''
+        SELECT item_code, inst_time, quantity, operation_code
+        FROM psi_input_instructions
+        WHERE inst_time >= ? AND inst_time < ?
+        ''',
+        (start_s, end_s),
+    ).fetchall()
+
+    sched_rows = conn.execute(
+        '''
+        SELECT
+            operation_code,
+            COALESCE(NULLIF(TRIM(machine_name), ''), NULLIF(TRIM(actual_resource), ''), 'Unknown') AS machine_name
+        FROM schedules
+        WHERE start_time >= ? AND start_time < ?
+          AND operation_code IS NOT NULL
+          AND TRIM(operation_code) <> ''
+        ''',
+        (start_s, end_s),
     ).fetchall()
     conn.close()
 
@@ -1589,30 +2311,76 @@ def _build_psi_data_for_month(start_date, end_date):
         day_list.append(d)
         d += timedelta(days=1)
 
+    def _day_from_inst_time(inst_time):
+        if not inst_time:
+            return None
+        s = str(inst_time).strip()
+        if len(s) < 8:
+            return None
+        for fmt in ('%Y-%m-%d', '%Y/%m/%d'):
+            try:
+                return datetime.strptime(s[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    op_to_machine_counts = defaultdict(lambda: defaultdict(int))
+    for sr in sched_rows:
+        op_code = str(sr['operation_code'] or '').strip()
+        machine_name = str(sr['machine_name'] or '').strip() or 'Unknown'
+        if not op_code:
+            continue
+        op_to_machine_counts[op_code][machine_name] += 1
+
+    def _machine_dim(op_raw) -> str:
+        op_code = str(op_raw or '').strip()
+        if not op_code:
+            return 'Unknown'
+        counts = op_to_machine_counts.get(op_code)
+        if counts:
+            return max(counts.items(), key=lambda kv: kv[1])[0]
+        return op_code
+
+    items: set[str] = set()
     agg = defaultdict(float)
-    items = set()
-    for r in rows:
-        item_key = (
-            r['operation_out_item']
-            or r['order_item_code']
-            or r['item_name']
-            or r['item_id']
-            or ''
-        )
+    for r in out_rows:
+        item_key = (r['item_code'] or '').strip()
         if not item_key:
             continue
         items.add(item_key)
-        m = r['machine_name'] or 'Unknown'
-        if not r['start_time']:
+        day = _day_from_inst_time(r['inst_time'])
+        if day is None:
             continue
-        try:
-            day = datetime.strptime(r['start_time'][:10], '%Y-%m-%d').date()
-        except ValueError:
-            continue
-        qty = r['quantity'] if r['quantity'] is not None else 0
-        agg[(item_key, day, m)] += qty
+        qty = float(r['quantity'] or 0)
+        if item_key.upper() == 'CUSTOMER' and qty > 0:
+            qty = -abs(qty)
+        machine = _machine_dim(r['operation_code'])
+        agg[(item_key, day, machine)] += qty
 
-    items = sorted(items)
+    demand_agg = defaultdict(float)
+    for r in in_rows:
+        item_key = (r['item_code'] or '').strip()
+        if not item_key:
+            continue
+        items.add(item_key)
+        day = _day_from_inst_time(r['inst_time'])
+        if day is None:
+            continue
+        qty = float(r['quantity'] or 0)
+        if qty <= 0:
+            continue
+        machine = _machine_dim(r['operation_code'])
+        demand_agg[(item_key, day, machine)] += qty
+
+    supply_qty = defaultdict(float)
+    for (item_key, day, _op), qty in agg.items():
+        if qty:
+            supply_qty[(item_key, day)] += qty
+
+    demand_qty = defaultdict(float)
+    for (item_key, day, _op), qty in demand_agg.items():
+        if qty:
+            demand_qty[(item_key, day)] += qty
 
     def split_item_code(code: str):
         if not code:
@@ -1626,14 +2394,15 @@ def _build_psi_data_for_month(start_date, end_date):
                 return code, None
         return code, None
 
+    items_sorted = sorted(items)
     families = {}
-    for it in items:
+    for it in items_sorted:
         base, num = split_item_code(it)
         if base is None:
             continue
         families.setdefault(base, []).append((it, num))
 
-    next_item_for = {}
+    next_item_for: dict[str, str] = {}
     ordered_items = []
     for base in sorted(families.keys()):
         variants = families[base]
@@ -1648,33 +2417,86 @@ def _build_psi_data_for_month(start_date, end_date):
         for code, num in numbered:
             if num is None:
                 continue
+            if code in next_item_for:
+                continue
             candidate = f"{base}-{num + 10}"
             if candidate in items:
                 next_item_for[code] = candidate
             elif base_code and base_code in items:
                 next_item_for[code] = base_code
-    remaining = [it for it in items if it not in ordered_items]
+    remaining = [it for it in items_sorted if it not in ordered_items]
     ordered_items.extend(sorted(remaining))
 
-    supply_qty = defaultdict(float)
-    for (item_key, day, m), qty in agg.items():
-        if qty:
-            supply_qty[(item_key, day)] += qty
+    return day_list, ordered_items, next_item_for, supply_qty, agg, demand_qty, demand_agg
 
-    return day_list, ordered_items, next_item_for, supply_qty, agg
+
+def _build_psi_begin_balances(month_start: datetime) -> dict[str, float]:
+    """
+    Beg Bal per item at month start from DefaultInventoryResource.
+    Use the latest row on/before month_start by effective start timestamp.
+    """
+    start_s = month_start.strftime('%Y-%m-%d %H:%M:%S')
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            '''
+            WITH inv AS (
+              SELECT
+                TRIM(COALESCE(item_id, '')) AS item_id,
+                CASE
+                  WHEN actual_start IS NOT NULL AND actual_end IS NOT NULL THEN actual_start
+                  ELSE start_time
+                END AS ts,
+                CASE
+                  WHEN actual_quantity IS NOT NULL THEN actual_quantity
+                  WHEN quantity IS NOT NULL THEN quantity
+                  ELSE 0
+                END AS qty
+              FROM schedules
+              WHERE TRIM(COALESCE(machine_id, '')) = 'DefaultInventoryResource'
+                AND TRIM(COALESCE(item_id, '')) <> ''
+            ),
+            ranked AS (
+              SELECT
+                item_id,
+                ts,
+                qty,
+                ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY ts DESC) AS rn
+              FROM inv
+              WHERE ts IS NOT NULL
+                AND ts <= ?
+            )
+            SELECT item_id, qty FROM ranked WHERE rn = 1
+            ''',
+            (start_s,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out: dict[str, float] = {}
+    for r in rows:
+        item = str(r['item_id'] or '').strip()
+        if not item:
+            continue
+        out[item] = float(r['qty'] or 0)
+    return out
 
 
 @app.route('/export_psi')
 def export_psi():
     """
     Export only the PSI table (Supply / Demand / Stock) for the current month to Excel.
-    Query param: date=YYYY-MM-DD (defaults to earliest schedule date or today).
+    Query param: date=YYYY-MM-DD (defaults to earliest instruction or schedule date, else today).
     """
     if Workbook is None:
         flash('Excel export requires openpyxl to be installed (pip install openpyxl).', 'error')
         return redirect(url_for('psi_view'))
 
-    date_str = request.args.get('date') or get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    date_str = (
+        request.args.get('date')
+        or get_earliest_psi_instruction_date()
+        or get_earliest_schedule_date()
+        or datetime.now().strftime('%Y-%m-%d')
+    )
     try:
         current_date = datetime.strptime(date_str, '%Y-%m-%d')
     except ValueError:
@@ -1686,8 +2508,11 @@ def export_psi():
     else:
         end_date = start_date.replace(month=start_date.month + 1)
 
-    day_list, ordered_items, next_item_for, supply_qty, agg = _build_psi_data_for_month(start_date, end_date)
-    day_labels = [f"{d.day}/{d.strftime('%b')}" for d in day_list]
+    day_list, ordered_items, _, supply_qty, agg, demand_qty, demand_agg = _build_psi_data_for_month(
+        start_date, end_date
+    )
+    beg_bal_by_item = _build_psi_begin_balances(start_date)
+    day_labels = [_format_md_weekday_en(d) for d in day_list]
 
     wb = Workbook()
     ws_psi = wb.active
@@ -1708,8 +2533,8 @@ def export_psi():
     psi_fill_even = PatternFill('solid', fgColor='FFFFFF')
     psi_fill_odd = PatternFill('solid', fgColor='DDF2CA')
 
-    ws_psi.append(['Item', 'Type'] + day_labels)
-    for col_idx in range(1, 3 + len(day_list)):
+    ws_psi.append(['Item', 'Type', 'Beg Bal'] + day_labels)
+    for col_idx in range(1, 4 + len(day_list)):
         cell = ws_psi.cell(row=1, column=col_idx)
         cell.font = header_font
         cell.fill = psi_header_fill
@@ -1717,9 +2542,11 @@ def export_psi():
         cell.alignment = center
 
     for item_key in ordered_items:
-        stock_prev = 0.0
+        beg_bal = float(beg_bal_by_item.get(item_key, 0.0))
+        stock_prev = beg_bal
         for row_type in ('Supply', 'Demand', 'Stock'):
-            row_vals = [item_key, row_type]
+            beg_bal_cell = beg_bal if row_type == 'Stock' else ''
+            row_vals = [item_key, row_type, beg_bal_cell]
             for d in day_list:
                 day_date = d.date()
                 if row_type == 'Supply':
@@ -1729,32 +2556,30 @@ def export_psi():
                             parts.append(f'{m}: {qty:g}')
                     cell_val = '\n'.join(parts) if parts else ''
                 elif row_type == 'Demand':
-                    next_item = next_item_for.get(item_key)
-                    if not next_item:
-                        cell_val = ''
-                    else:
-                        parts = []
-                        for (it, day, m), qty in agg.items():
-                            if it == next_item and day == day_date and qty:
-                                parts.append(f'{m}: {qty:g}')
-                        cell_val = '\n'.join(parts) if parts else ''
+                    parts = []
+                    for (it, day, m), qty in demand_agg.items():
+                        if it == item_key and day == day_date and qty and float(qty) > 0:
+                            parts.append(f'{m}: {qty:g}')
+                    cell_val = '\n'.join(parts) if parts else ''
                 else:
                     s = supply_qty.get((item_key, day_date), 0.0)
-                    next_item = next_item_for.get(item_key)
-                    d_qty = supply_qty.get((next_item, day_date), 0.0) if next_item else 0.0
+                    d_qty = demand_qty.get((item_key, day_date), 0.0)
                     stock = stock_prev + s - d_qty
                     stock_prev = stock
-                    cell_val = stock if stock != 0 else ''
+                    cell_val = stock
                 row_vals.append(cell_val)
             ws_psi.append(row_vals)
 
-    for r_idx, row in enumerate(ws_psi.iter_rows(min_row=2, max_row=ws_psi.max_row, min_col=1, max_col=2 + len(day_list)), start=2):
+    for r_idx, row in enumerate(
+        ws_psi.iter_rows(min_row=2, max_row=ws_psi.max_row, min_col=1, max_col=3 + len(day_list)),
+        start=2
+    ):
         item_group = (r_idx - 2) // 3
         fill = psi_fill_even if (item_group % 2 == 0) else psi_fill_odd
         for cell in row:
             cell.border = thin_border
             cell.fill = fill
-            if cell.col_idx <= 2:
+            if cell.col_idx <= 3:
                 cell.alignment = Alignment(horizontal='left', vertical='center')
             else:
                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -1762,8 +2587,9 @@ def export_psi():
 
     ws_psi.column_dimensions['A'].width = 22
     ws_psi.column_dimensions['B'].width = 10
+    ws_psi.column_dimensions['C'].width = 10
     for idx in range(len(day_list)):
-        col_letter = ws_psi.cell(row=1, column=3 + idx).column_letter
+        col_letter = ws_psi.cell(row=1, column=4 + idx).column_letter
         ws_psi.column_dimensions[col_letter].width = 11
 
     buf = io.BytesIO()
