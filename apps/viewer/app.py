@@ -111,12 +111,41 @@ def _sqlite_row_as_dict(row: sqlite3.Row) -> dict:
     return {k: row[k] for k in row.keys()}
 
 
+def _gantt_operation_suffix_seq(operation_code: Optional[str]) -> Optional[int]:
+    """``operation_code`` の ``:`` 以降先頭の連続数字を工程番号として解釈する（PSI の _op_parts と同趣旨）。
+
+    例: ``P:5`` → 5、``P:50`` → 50（購入は ``:5`` のみ除外するため区別が必要）。
+    """
+    op = str(operation_code or "").strip()
+    if not op or ":" not in op:
+        return None
+    rhs = op.split(":", 1)[1].strip()
+    num_buf = ""
+    found_digit = False
+    for ch in rhs:
+        if ch.isdigit():
+            num_buf += ch
+            found_digit = True
+        elif found_digit:
+            break
+    if not found_digit:
+        return None
+    return int(num_buf)
+
+
+def _gantt_omit_purchased_operation(operation_code: Optional[str]) -> bool:
+    """購入品目（工程 ``:5`` のみ）。``:50`` 等は除外しない。"""
+    return _gantt_operation_suffix_seq(operation_code) == 5
+
+
 def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
     """
     One schedule row → gantt task dict.
     plan_* = DB plan (start_time, end_time, machine_name).
     start/end/machine = display (actual_start/end/resource when both actual times are set, else plan).
     """
+    if _gantt_omit_purchased_operation(r["operation_code"]):
+        return None
     rd = _sqlite_row_as_dict(r)
     try:
         plan_s = datetime.strptime(r['start_time'], '%Y-%m-%d %H:%M:%S')
@@ -2035,7 +2064,7 @@ def export_monthly():
                 else:
                     s = supply_qty_psi.get((item_key, day_date), 0.0)
                     d_qty = demand_qty_psi.get((item_key, day_date), 0.0)
-                    stock = stock_prev + s - d_qty
+                    stock = _psi_snap_near_zero_stock(stock_prev + s - d_qty)
                     stock_prev = stock
                     cell_val = stock if stock != 0 else ''
                 row_vals.append(cell_val)
@@ -2270,7 +2299,7 @@ def psi_view():
     day_list, ordered_items, _, supply_qty, agg, demand_qty, demand_agg = _build_psi_data_for_month(
         start_date, end_date
     )
-    beg_bal_by_item = _build_psi_begin_balances(start_date)
+    beg_bal_by_item = _build_psi_effective_begin_balances(start_date)
     day_labels = [_format_md_weekday_en(d) for d in day_list]
 
     customer = get_customer(session.get('viewer_customer_id'))
@@ -2287,7 +2316,7 @@ def psi_view():
     for item_key in ordered_items:
         rows_for_item = []
         beg_bal = float(beg_bal_by_item.get(item_key, 0.0))
-        stock_prev = beg_bal
+        stock_prev = _psi_snap_near_zero_stock(beg_bal)
         for row_def in row_defs:
             cells = []
             for d in day_list:
@@ -2340,7 +2369,7 @@ def psi_view():
                 else:  # Stock
                     s = supply_qty.get((item_key, day_date), 0.0)
                     d_qty = demand_qty.get((item_key, day_date), 0.0)
-                    stock = stock_prev + s - d_qty
+                    stock = _psi_snap_near_zero_stock(stock_prev + s - d_qty)
                     stock_prev = stock
                     cell_val = f'{stock:g}'
                 cells.append(cell_val)
@@ -2349,7 +2378,7 @@ def psi_view():
                     'type_main': row_def.type_main,
                     'type_sub': row_def.type_sub,
                     'type_rowspan': row_def.type_rowspan,
-                    'beg_bal': f'{beg_bal:g}' if row_def.row_type == 'Stock' else '',
+                    'beg_bal': f'{_psi_snap_near_zero_stock(beg_bal):g}' if row_def.row_type == 'Stock' else '',
                     'cells': cells,
                 }
             )
@@ -3124,10 +3153,21 @@ def _build_psi_data_for_month(start_date, end_date):
 # 顧客別ロジックは `core/customers/<id>.py` を参照。
 
 
+def _psi_snap_near_zero_stock(x: float) -> float:
+    """Running stock の float 誤差（例: 94.2 - 94.2 ≈ 4e-14）を実質ゼロに丸める。"""
+    xf = float(x)
+    if not math.isfinite(xf):
+        return xf
+    if math.isclose(xf, 0.0, abs_tol=1e-9, rel_tol=0.0):
+        return 0.0
+    return xf
+
+
 def _build_psi_begin_balances(month_start: datetime) -> dict[str, float]:
     """
-    Beg Bal per item at month start from DefaultInventoryResource.
-    Use the latest row on/before month_start by effective start timestamp.
+    Schedule-only opening: latest ``DefaultInventoryResource`` row on/before
+    ``month_start`` (effective timestamp). Does not include PSI carryforward;
+    use ``_build_psi_effective_begin_balances`` for the PSI viewer / export.
     """
     start_s = month_start.strftime('%Y-%m-%d %H:%M:%S')
     conn = get_db()
@@ -3175,6 +3215,55 @@ def _build_psi_begin_balances(month_start: datetime) -> dict[str, float]:
     return out
 
 
+def _psi_month_end_closing_balances(
+    month_start: datetime, month_end: datetime
+) -> dict[str, float]:
+    """Per-item closing stock at end of ``[month_start, month_end)`` (same walk as Stock row).
+
+    Opening for that window is ``_build_psi_begin_balances(month_start)`` (inventory resource
+    snapshot only). Movements use aggregated supply/demand from ``_build_psi_data_for_month``.
+    """
+    day_list, ordered_items, _, supply_qty, _agg, demand_qty, _demand_agg = (
+        _build_psi_data_for_month(month_start, month_end)
+    )
+    beg_sched = _build_psi_begin_balances(month_start)
+    out: dict[str, float] = {}
+    for item_key in ordered_items:
+        stock_prev = _psi_snap_near_zero_stock(float(beg_sched.get(item_key, 0.0)))
+        for d in day_list:
+            day_date = d.date()
+            s = supply_qty.get((item_key, day_date), 0.0)
+            d_qty = demand_qty.get((item_key, day_date), 0.0)
+            stock_prev = _psi_snap_near_zero_stock(stock_prev + float(s) - float(d_qty))
+        out[item_key] = _psi_snap_near_zero_stock(stock_prev)
+    return out
+
+
+def _build_psi_effective_begin_balances(month_start: datetime) -> dict[str, float]:
+    """Opening balance for PSI Stock at ``month_start``.
+
+    If an inventory snapshot exists for the item (see ``_build_psi_begin_balances``), that
+    value wins. Otherwise use the prior calendar month's closing stock from the same Supply /
+    Demand walk so month-end balances carry into the next month (e.g. 4/30 closing -> May Beg
+    Bal when no May 1 snapshot is loaded).
+    """
+    schedule_only = _build_psi_begin_balances(month_start)
+    if month_start.month == 1:
+        prev_start = month_start.replace(year=month_start.year - 1, month=12, day=1)
+    else:
+        prev_start = month_start.replace(month=month_start.month - 1, day=1)
+
+    carry = _psi_month_end_closing_balances(prev_start, month_start)
+
+    out: dict[str, float] = {}
+    for item in set(schedule_only.keys()) | set(carry.keys()):
+        if item in schedule_only:
+            out[item] = schedule_only[item]
+        else:
+            out[item] = float(carry.get(item, 0.0))
+    return out
+
+
 @app.route('/export_psi')
 def export_psi():
     """
@@ -3205,7 +3294,7 @@ def export_psi():
     day_list, ordered_items, _, supply_qty, agg, demand_qty, demand_agg = _build_psi_data_for_month(
         start_date, end_date
     )
-    beg_bal_by_item = _build_psi_begin_balances(start_date)
+    beg_bal_by_item = _build_psi_effective_begin_balances(start_date)
     day_labels = [_format_md_weekday_en(d) for d in day_list]
 
     wb = Workbook()
@@ -3237,9 +3326,9 @@ def export_psi():
 
     for item_key in ordered_items:
         beg_bal = float(beg_bal_by_item.get(item_key, 0.0))
-        stock_prev = beg_bal
+        stock_prev = _psi_snap_near_zero_stock(beg_bal)
         for row_type in ('Supply', 'Demand', 'Stock'):
-            beg_bal_cell = beg_bal if row_type == 'Stock' else ''
+            beg_bal_cell = _psi_snap_near_zero_stock(beg_bal) if row_type == 'Stock' else ''
             row_vals = [item_key, row_type, beg_bal_cell]
             for d in day_list:
                 day_date = d.date()
@@ -3258,7 +3347,7 @@ def export_psi():
                 else:
                     s = supply_qty.get((item_key, day_date), 0.0)
                     d_qty = demand_qty.get((item_key, day_date), 0.0)
-                    stock = stock_prev + s - d_qty
+                    stock = _psi_snap_near_zero_stock(stock_prev + s - d_qty)
                     stock_prev = stock
                     cell_val = stock
                 row_vals.append(cell_val)

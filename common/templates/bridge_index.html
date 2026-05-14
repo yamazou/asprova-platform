@@ -3,6 +3,13 @@
 {% block title %}Asprova Data Bridge{% endblock %}
 
 {% block content %}
+<style>
+  .bridge-transaction-btn--disabled,
+  .bridge-transaction-btn--disabled:hover {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+</style>
 <div class="card">
   <div class="card-header">
     <div class="card-title">MASTER</div>
@@ -36,9 +43,20 @@
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       {# ボタン構成は core/customers/<id>.py の bridge_buttons() で定義される。 #}
       {% for btn in customer_view.bridge_buttons %}
+      {% if btn.disabled %}
+      <button
+        type="button"
+        class="btn btn-ghost bridge-transaction-btn--disabled"
+        disabled
+        aria-disabled="true"
+      >
+        {{ btn.label }}
+      </button>
+      {% else %}
       <button type="button" class="btn btn-ghost" onclick="confirmDownload('{{ btn.kind }}')">
         {{ btn.label }}
       </button>
+      {% endif %}
       {% endfor %}
     </div>
   </div>

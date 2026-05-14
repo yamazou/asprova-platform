@@ -45,37 +45,36 @@
 .psi-table .psi-item {
     position: sticky;
     left: 0;
+    top: 0;
     z-index: 3;
     background: inherit;
 }
 .psi-table .psi-type {
     position: sticky;
     left: 140px;
+    top: 0;
     z-index: 3;
     background: inherit;
 }
+/* Beg Bal must stay sticky vertically (like other .psi-header cells) and horizontally. */
 .psi-table .psi-begbal {
-    position: static;
-}
-.psi-table.phc-freeze-begbal .psi-begbal {
     position: sticky;
     left: 210px;
+    top: 0;
     z-index: 55;
-    background: var(--surface);
+    background: inherit;
 }
-.psi-table.phc-freeze-begbal th.psi-begbal {
-    z-index: 80;
-    background: var(--surface2);
-}
-.psi-table.phc-freeze-begbal td.psi-begbal {
-    z-index: 55;
-    /* Draw a seam so date headers/cells never visually bleed over sticky column. */
+.psi-table td.psi-begbal {
+    /* Seam so date headers/cells never visually bleed over the sticky column. */
     box-shadow: 1px 0 0 rgba(30,58,95,0.5);
 }
 .psi-table th.psi-item,
-.psi-table th.psi-type,
-.psi-table th.psi-begbal {
+.psi-table th.psi-type {
     z-index: 60;
+    background: var(--surface2);
+}
+.psi-table th.psi-begbal {
+    z-index: 80;
     background: var(--surface2);
 }
 .psi-row-even {

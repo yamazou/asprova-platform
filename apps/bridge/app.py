@@ -797,6 +797,29 @@ def _download_error_response(message: str) -> Response:
     return redirect(url_for("index"))
 
 
+def _bridge_kind_download_allowed(kind: str) -> bool:
+    """TRANSACTION で ``disabled`` のボタンに対応する kind は POST でも拒否する。"""
+
+    for btn in get_customer(session.get("customer_id")).bridge_buttons():
+        if btn.kind == kind:
+            return not btn.disabled
+    return True
+
+
+def _sanitize_item_table_rows(rows: list[tuple]) -> list[tuple]:
+    """Item table CSV: Asprova 連携都合で ITM_NM 内のカンマを ``#`` に置換する。"""
+    out: list[tuple] = []
+    for r in rows:
+        if not r:
+            out.append(r)
+            continue
+        cells = list(r)
+        if len(cells) > 1 and cells[1] is not None:
+            cells[1] = str(cells[1]).replace(",", "#")
+        out.append(tuple(cells))
+    return out
+
+
 @app.route("/download/integrated", methods=["POST"])
 def download_integrated():
     guard = _require_connection_or_redirect()
@@ -824,7 +847,9 @@ def download_item_table():
         return guard
     try:
         service = _get_erp_service()
-        rows = service.fetch_item_rows(upload=request.files.get("source_excel"))
+        rows = _sanitize_item_table_rows(
+            service.fetch_item_rows(upload=request.files.get("source_excel"))
+        )
         csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
     except NotSupportedError as exc:
         return _download_error_response(str(exc))
@@ -838,6 +863,10 @@ def download_order_table():
     guard = _require_connection_or_redirect()
     if guard is not None:
         return guard
+    if not _bridge_kind_download_allowed("order"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
     try:
         service = _get_erp_service()
         rows = service.fetch_order_rows(upload=request.files.get("source_excel"))
@@ -891,6 +920,10 @@ def download_inventory_table():
     guard = _require_connection_or_redirect()
     if guard is not None:
         return guard
+    if not _bridge_kind_download_allowed("inventory"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
     try:
         service = _get_erp_service()
         rows = service.fetch_inventory_rows(

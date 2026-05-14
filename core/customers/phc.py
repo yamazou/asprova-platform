@@ -2,9 +2,7 @@
 
 主な差分:
     - PSI ビューを Customer (Export / Internal) 軸で行分割する
-    - Beg Bal 列を sticky 表示するため CSS クラスを追加する
 """
-
 from __future__ import annotations
 
 from collections import defaultdict
@@ -24,9 +22,6 @@ class PhcCustomer(CustomerStrategy):
 
     def psi_split_by_customer(self) -> bool:
         return True
-
-    def psi_table_extra_class(self) -> Optional[str]:
-        return "phc-freeze-begbal"
 
     def psi_row_definitions(self) -> list[PsiRowDefinition]:
         return [

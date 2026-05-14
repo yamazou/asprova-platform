@@ -41,6 +41,7 @@ class BridgeButton:
 
     kind: str  # 'order' | 'prd_plan' | 'inventory' | 'inventory_wip'
     label: str
+    disabled: bool = False
 
 
 @dataclass
