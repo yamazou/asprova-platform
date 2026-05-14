@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple
 
-from core.sap_integrated_master import (
-    _bracket_ident,
-    _pick_column,
-    _sqlserver_table_columns,
+from .schema import (
+    bracket_ident as _bracket_ident,
+    pick_column as _pick_column,
+    sqlserver_table_columns as _sqlserver_table_columns,
 )
 
 _DOC_CANDIDATES: Tuple[str, ...] = (
@@ -66,7 +66,7 @@ def fetch_order_rows_from_sqlserver(pyodbc_conn) -> List[Tuple[Any, Any, Any, An
     """Return (REQ_NO, ITM_CD, DLV_DT, REQ_QTY, CUST_CD) rows."""
     cols = _sqlserver_table_columns(pyodbc_conn, "SHIP_SCH")
     if not cols:
-        raise RuntimeError("dbo.SHIP_SCH が見つからないか、列情報を取得できません。")
+        raise RuntimeError("dbo.SHIP_SCH was not found, or column information could not be retrieved.")
 
     doc = _pick_column(cols, _DOC_CANDIDATES)
     itm = _pick_column(cols, _ITEM_CANDIDATES)
@@ -74,8 +74,8 @@ def fetch_order_rows_from_sqlserver(pyodbc_conn) -> List[Tuple[Any, Any, Any, An
     qty = _pick_column(cols, _QTY_CANDIDATES)
     if not doc or not itm or not sdt or not qty:
         raise RuntimeError(
-            "SHIP_SCH に Document / Item / ShipDate / Quantity 系の列が見つかりません。"
-            f" 実際の列: {', '.join(cols)}。"
+            "No Document / Item / ShipDate / Quantity column was found in SHIP_SCH. "
+            f"Actual columns: {', '.join(cols)}."
         )
 
     cust = _pick_column(cols, _CUST_CANDIDATES)

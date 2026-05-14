@@ -23,7 +23,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config.settings import DB_PATH  # noqa: E402
-from core.sap_integrated_master import sync_from_sqlserver_to_sqlite  # noqa: E402
+from core.erp.sap_b1.integrated_master import sync_from_sqlserver_to_sqlite  # noqa: E402
 
 
 def main() -> int:

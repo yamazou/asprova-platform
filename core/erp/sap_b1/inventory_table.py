@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple
 
-from core.sap_integrated_master import (
-    _bracket_ident,
-    _pick_column,
-    _sqlserver_table_columns,
+from .schema import (
+    bracket_ident as _bracket_ident,
+    pick_column as _pick_column,
+    sqlserver_table_columns as _sqlserver_table_columns,
 )
 
 _ITEM_CD_CANDIDATES: Tuple[str, ...] = (
@@ -49,14 +49,14 @@ def fetch_inventory_rows_from_sqlserver(pyodbc_conn) -> List[Tuple[Any, Any, Any
     """Return (INV_CD, ITM_CD, STK_QTY, INV_DT) rows; INV_DT is always None."""
     cols = _sqlserver_table_columns(pyodbc_conn, "BEG_INV")
     if not cols:
-        raise RuntimeError("dbo.BEG_INV が見つからないか、列情報を取得できません。")
+        raise RuntimeError("dbo.BEG_INV was not found, or column information could not be retrieved.")
 
     itm = _pick_column(cols, _ITEM_CD_CANDIDATES)
     stk = _pick_column(cols, _STOCK_CANDIDATES)
     if not itm or not stk:
         raise RuntimeError(
-            "BEG_INV に品目コード列・在庫数量列が見つかりません。"
-            f" 実際の列: {', '.join(cols)}。"
+            "No item code or stock quantity column was found in BEG_INV. "
+            f"Actual columns: {', '.join(cols)}."
         )
 
     qi = _bracket_ident(itm)

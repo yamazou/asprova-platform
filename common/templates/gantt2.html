@@ -2,7 +2,7 @@
 {% block title %}Gantt Chart — Asprova Schedule Viewer{% endblock %}
 
 {% block extra_styles %}
-<!-- asprova-gantt-revision:6 （ページソースにこれが無ければ別サーバー／古いテンプレートです） -->
+<!-- asprova-gantt-revision:24 （ページソースにこれが無ければ別サーバー／古いテンプレートです） -->
 <style>
 /* タイトル行を無くした分、チャートを縦に広く使う */
 .gantt-view .gantt-controls {
@@ -209,7 +209,8 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
-    z-index: 1;
+    /* バー（z-index 2〜）より手前に描かないと線が見えない */
+    z-index: 40;
 }
 
 .gantt-machine-name {
@@ -279,6 +280,23 @@
     color: #0d47a1;
     font-weight: 500;
 }
+.gantt-op-detail__qty-input {
+    width: 100%;
+    max-width: 120px;
+    box-sizing: border-box;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-bright);
+}
+.gantt-op-detail__qty-input.gantt-op-detail__qty-actual {
+    color: #0d47a1;
+    font-weight: 500;
+    -webkit-text-fill-color: #0d47a1;
+}
 .gantt-op-detail__empty {
     padding: 12px;
     color: var(--text-dim);
@@ -324,8 +342,8 @@
 
 .gantt-bar {
     position: absolute;
-    top: 6px;
-    bottom: 6px;
+    /* top / height は renderGantt でリソース行内の重なり分だけ縦分割して指定 */
+    bottom: auto;
     border-radius: 3px;
     border: 1px solid;
     display: flex;
@@ -388,6 +406,11 @@
     opacity: 0.95;
     z-index: 50 !important;
     box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+}
+/* 単クリックでロット工程チェーン表示中のバー（黄枠のみ） */
+.gantt-bar--chain-member {
+    box-shadow: 0 0 0 3px rgba(255, 193, 7, 0.95);
+    z-index: 9;
 }
 .gantt-bar-resize {
     position: absolute;
@@ -693,7 +716,7 @@
 <div class="gantt-view">
 <div class="controls gantt-controls">
     <div class="nav-arrows">
-        <a href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
+        <a data-gantt-query-link="1" href="?view={{ view }}&date={{ prev_date }}&machine={{ machine_filter }}">← Prev</a>
         <span class="date-label">
             {% if view == 'monthly' %}
                 {{ start_date.strftime('%b %Y') }}
@@ -703,14 +726,14 @@
                 {{ current_date.strftime('%Y-%m-%d') }}
             {% endif %}
         </span>
-        <a href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
+        <a data-gantt-query-link="1" href="?view={{ view }}&date={{ next_date }}&machine={{ machine_filter }}">Next →</a>
     </div>
 
     <div class="gantt-view-toggle-wrap">
         <div class="view-toggle">
-            <a href="?view=daily&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'daily' %}active{% endif %}">Daily</a>
-            <a href="?view=weekly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'weekly' %}active{% endif %}">Weekly</a>
-            <a href="?view=monthly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'monthly' %}active{% endif %}">Monthly</a>
+            <a data-gantt-query-link="1" href="?view=daily&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'daily' %}active{% endif %}">Daily</a>
+            <a data-gantt-query-link="1" href="?view=weekly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'weekly' %}active{% endif %}">Weekly</a>
+            <a data-gantt-query-link="1" href="?view=monthly&date={{ current_date.strftime('%Y-%m-%d') }}&machine={{ machine_filter }}" class="{% if view == 'monthly' %}active{% endif %}">Monthly</a>
         </div>
     </div>
 
@@ -724,10 +747,10 @@
         </div>
     </div>
     <div class="gantt-machine-wrap">
-        <form method="GET" style="display:flex; gap:8px; align-items:center;">
+        <form method="GET" id="gantt-machine-form" style="display:flex; gap:8px; align-items:center;">
             <input type="hidden" name="view" value="{{ view }}">
             <input type="hidden" name="date" id="gantt-nav-date" value="{{ current_date.strftime('%Y-%m-%d') }}">
-            <select name="machine" id="gantt-machine-select" onchange="this.form.submit()" aria-label="Resource / machine filter">
+            <select name="machine" id="gantt-machine-select" aria-label="Resource / machine filter">
                 <option value="">All resources</option>
                 {% for m in machines %}
                 <option value="{{ m.machine_name }}" {% if machine_filter == m.machine_name %}selected{% endif %}>{{ m.machine_name }}</option>
@@ -759,14 +782,14 @@
     </div>
 
     <div class="gantt-frozen-bar" style="display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap;">
-        <label for="gantt-frozen-date" class="gantt-frozen-bar__label" title="締め日（この日の 23:59 までに開始した作業が対象）">Cutoff</label>
+        <label for="gantt-frozen-date" class="gantt-frozen-bar__label" title="Cutoff date (tasks started by 23:59 on this date are included)">Cutoff</label>
         <input type="date" id="gantt-frozen-date" name="gantt_frozen_date" class="gantt-frozen-bar__date"
             value="{{ current_date.strftime('%Y-%m-%d') }}" aria-label="Frozen cutoff date" />
         <button type="button" class="btn btn-sm btn-ghost" id="gantt-frozen-btn" title="Freeze tasks started on/before selected date 23:59 (copy plan values into missing actual results)">[Frozen]</button>
     </div>
 </div>
 
-<div class="gantt-container{% if machine_filter %} gantt-container--filtered{% endif %}" id="gantt-wrapper" data-asprova-gantt-revision="7">
+<div class="gantt-container{% if machine_filter %} gantt-container--filtered{% endif %}" id="gantt-wrapper" data-asprova-gantt-revision="24">
     {% if tasks %}
     <div id="gantt-root"></div>
     {% else %}
@@ -787,15 +810,15 @@
         <span id="gantt-op-detail-title"></span>
         <a href="#" class="btn btn-sm btn-primary" id="gantt-op-detail-export" style="display:none;">Export Excel</a>
     </div>
-    <div class="gantt-op-detail__body">
+    <div class="gantt-op-detail__body" id="gantt-op-detail-scroll">
         <table class="gantt-op-detail__table">
             <thead>
                 <tr>
-                    <th>start (M/D)</th>
-                    <th>item_id</th>
-                    <th>quantity</th>
-                    <th>status</th>
-                    <th>planned quantity</th>
+                    <th>Start (M/D)</th>
+                    <th>Item id</th>
+                    <th>Actual qty</th>
+                    <th>Status</th>
+                    <th>Planned qty</th>
                 </tr>
             </thead>
             <tbody id="gantt-op-detail-body"></tbody>
@@ -825,8 +848,20 @@ const TASKS = {{ tasks | tojson }};
 const VIEW = "{{ view }}";
 const START_DATE = new Date("{{ start_date.strftime('%Y-%m-%dT00:00:00') }}");
 const END_DATE = new Date("{{ end_date.strftime('%Y-%m-%dT00:00:00') }}");
+/** Avoid NaN/0 span breaking bar positions and drag math */
+function ganttSafeTimelineSpanMs() {
+    const raw = END_DATE.getTime() - START_DATE.getTime();
+    return Number.isFinite(raw) && raw > 0 ? raw : 86400000;
+}
 const ITEM_FILTER = "{{ item_filter or '' }}";
 const INITIAL_MACHINE_FILTER = "{{ machine_filter or '' }}";
+
+/** 単クリックで表示するロット工程チェーン（スケジュール id） */
+let ganttLotChainScheduleId = null;
+/** チェーンに含まれるスケジュール id（文字列） */
+let ganttLotChainHighlightedIds = new Set();
+let ganttBarSingleClickChainTimer = null;
+let ganttSuppressBarChainClickUntil = 0;
 
 const VIEW_ZOOM_KEY = 'asprovaViewZoom';
 const LEGACY_GANTT_ZOOM_KEY = 'asprovaGanttZoom';
@@ -1364,11 +1399,117 @@ function formatMonthDayForGanttDetail(value) {
     return '—';
 }
 
+function syncGanttOpDetailQtyInputFromTask(input) {
+    const sid = input.getAttribute('data-schedule-id');
+    if (!sid) return;
+    const task = TASKS.find((x) => String(x.id) === String(sid));
+    if (!task) return;
+    const nA = normalizeGanttActualQuantity(task);
+    const planLbl = formatGanttQtyLabel(task.quantity);
+    const idisp = nA !== null ? formatGanttQtyLabel(nA) : (planLbl !== '—' ? planLbl : '');
+    input.value = idisp === '—' ? '' : idisp;
+}
+
+function bindGanttOpDetailActualQtyInputs() {
+    const body = document.getElementById('gantt-op-detail-body');
+    if (!body) return;
+    body.querySelectorAll('input.gantt-op-detail__qty-input').forEach((input) => {
+        const sid = input.getAttribute('data-schedule-id');
+        if (!sid) return;
+
+        async function commit() {
+            if (input.dataset.ganttOpDetailQtyCommitting === '1') return;
+            input.dataset.ganttOpDetailQtyCommitting = '1';
+            try {
+                if (!input.isConnected) return;
+                const str = String(input.value ?? '').trim();
+                let bodyVal;
+                if (str === '') bodyVal = null;
+                else if (!Number.isFinite(Number(str))) {
+                    syncGanttOpDetailQtyInputFromTask(input);
+                    return;
+                } else {
+                    bodyVal = Number(str);
+                }
+                const task = TASKS.find((x) => String(x.id) === String(sid));
+                if (!task) return;
+                const cur = normalizeGanttActualQuantity(task);
+                const same =
+                    (bodyVal === null && cur === null) ||
+                    (bodyVal !== null && cur !== null && Number(bodyVal) === Number(cur));
+                if (same) return;
+
+                const res = await fetch(scheduleActualQuantityUrl(sid), {
+                    method: 'POST',
+                    headers: actualQtyFetchHeaders(),
+                    body: JSON.stringify({ actual_quantity: bodyVal }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) {
+                    syncGanttOpDetailQtyInputFromTask(input);
+                    return;
+                }
+                const tid = Number(sid);
+                for (let i = 0; i < TASKS.length; i++) {
+                    if (Number(TASKS[i].id) === tid) {
+                        TASKS[i].actual_quantity = data.actual_quantity;
+                        break;
+                    }
+                }
+                renderGantt();
+            } finally {
+                delete input.dataset.ganttOpDetailQtyCommitting;
+            }
+        }
+
+        function onKey(ev) {
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                commit();
+            } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                ev.stopPropagation();
+                syncGanttOpDetailQtyInputFromTask(input);
+                input.blur();
+            }
+        }
+
+        input.addEventListener('keydown', onKey);
+        input.addEventListener('blur', () => {
+            setTimeout(() => {
+                if (!input.isConnected) return;
+                commit();
+            }, 120);
+        });
+    });
+}
+
+function restoreGanttOpDetailScroll(ratioY) {
+    const el = document.getElementById('gantt-op-detail-scroll');
+    if (!el) return;
+    const r = Number(ratioY);
+    if (!Number.isFinite(r)) return;
+    const clamped = Math.min(1, Math.max(0, r));
+    function tick() {
+        const maxY = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.min(maxY, clamped * maxY);
+    }
+    requestAnimationFrame(() => {
+        tick();
+        requestAnimationFrame(() => {
+            tick();
+            setTimeout(tick, 0);
+            setTimeout(tick, 50);
+        });
+    });
+}
+
 function renderResourceOperationDetail(resourceName) {
     const box = document.getElementById('gantt-op-detail');
     const title = document.getElementById('gantt-op-detail-title');
     const body = document.getElementById('gantt-op-detail-body');
     const exportLink = document.getElementById('gantt-op-detail-export');
+    const scrollEl = document.getElementById('gantt-op-detail-scroll');
     if (!box || !title || !body || !exportLink) return;
     const target = String(resourceName || '').trim();
     if (!target) {
@@ -1376,6 +1517,11 @@ function renderResourceOperationDetail(resourceName) {
         exportLink.style.display = 'none';
         selectedResourceName = '';
         return;
+    }
+    let preserveDetailScrollRatioY = 0;
+    if (scrollEl) {
+        const maxY = scrollEl.scrollHeight - scrollEl.clientHeight;
+        preserveDetailScrollRatioY = maxY > 0 ? scrollEl.scrollTop / maxY : 0;
     }
     selectedResourceName = target;
     const rows = TASKS
@@ -1398,15 +1544,19 @@ function renderResourceOperationDetail(resourceName) {
     if (!rows.length) {
         body.innerHTML = `<tr><td colspan="5" class="gantt-op-detail__empty">No operations for this resource in current view.</td></tr>`;
         box.style.display = '';
+        restoreGanttOpDetailScroll(preserveDetailScrollRatioY);
         return;
     }
     const grouped = rows.map((t) => ({
+        scheduleId: t.id,
         startMd: formatMonthDayForGanttDetail(t.actual_start || t.plan_start || t.start),
         itemId: String(t.item_id || '—'),
         hasActualQty: normalizeGanttActualQuantity(t) !== null,
-        quantity: (() => {
+        qtyValue: (() => {
             const aq = normalizeGanttActualQuantity(t);
-            return aq === null ? formatGanttQtyLabel(t.quantity) : formatGanttQtyLabel(aq);
+            const planLbl = formatGanttQtyLabel(t.quantity);
+            const idisp = aq !== null ? formatGanttQtyLabel(aq) : (planLbl !== '—' ? planLbl : '');
+            return idisp === '—' ? '' : idisp;
         })(),
         status: String(t.status || '—'),
         plannedQty: (() => {
@@ -1445,16 +1595,21 @@ function renderResourceOperationDetail(resourceName) {
         const itemCell = r.itemRowspan > 0
             ? `<td rowspan="${r.itemRowspan}">${escapeHtml(r.itemId)}</td>`
             : '';
-        const qtyCls = r.hasActualQty ? ' class="gantt-op-detail__qty-actual"' : '';
+        const qtyInpCls = r.hasActualQty
+            ? 'gantt-op-detail__qty-input gantt-op-detail__qty-actual'
+            : 'gantt-op-detail__qty-input';
+        const qtyCell = `<td><input type="text" class="${qtyInpCls}" data-schedule-id="${escapeHtml(String(r.scheduleId))}" value="${escapeHtml(r.qtyValue)}" inputmode="decimal" aria-label="Actual quantity" /></td>`;
         return `<tr>
             ${startCell}
             ${itemCell}
-            <td${qtyCls}>${escapeHtml(r.quantity)}</td>
+            ${qtyCell}
             <td>${escapeHtml(r.status)}</td>
             <td>${escapeHtml(r.plannedQty)}</td>
         </tr>`;
     }).join('');
     box.style.display = '';
+    bindGanttOpDetailActualQtyInputs();
+    restoreGanttOpDetailScroll(preserveDetailScrollRatioY);
 }
 
 function bindResourceRowClickHandlers() {
@@ -1470,17 +1625,10 @@ function bindResourceRowClickHandlers() {
 function applyGanttResourceFilter(resourceName) {
     const target = String(resourceName || '').trim();
     if (!target) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('machine', target);
-    url.searchParams.set('view', VIEW);
-    const navDate = document.getElementById('gantt-nav-date');
-    if (navDate && navDate.value) {
-        url.searchParams.set('date', navDate.value);
-    }
-    if (ITEM_FILTER) {
-        url.searchParams.set('item', ITEM_FILTER);
-    }
-    window.location.href = url.toString();
+    const sel = document.getElementById('gantt-machine-select');
+    if (!sel) return;
+    sel.value = target;
+    void applyGanttResourceFilterWithoutReload();
 }
 
 async function persistGanttActualPlanTimesAfterInteraction(taskId, startStr, endStr, machineName, positionEvent) {
@@ -1579,9 +1727,10 @@ async function onGanttBarPointerUp(e) {
 
     if (!d.moved) return;
 
+    ganttSuppressBarChainClickUntil = performance.now() + 450;
     ganttBarSuppressNextDblClick = true;
     const main = d.main;
-    const totalMs = END_DATE - START_DATE;
+    const totalMs = ganttSafeTimelineSpanMs();
     const timelineWidth = d.td.clientWidth;
     if (!Number.isFinite(timelineWidth) || timelineWidth <= 0) return;
 
@@ -1672,12 +1821,14 @@ async function onGanttResizePointerUp(e) {
         return;
     }
 
+    ganttSuppressBarChainClickUntil = performance.now() + 450;
+
     const tw = d.td.clientWidth;
     if (!Number.isFinite(tw) || tw <= 0) {
         renderGantt();
         return;
     }
-    const totalMs = END_DATE - START_DATE;
+    const totalMs = ganttSafeTimelineSpanMs();
     const finalLeft = parseFloat(d.bar.style.left) || d.origLeft;
     const finalWidth = parseFloat(d.bar.style.width) || d.origWidth;
 
@@ -1814,6 +1965,7 @@ function onGanttBarPointerDown(e) {
 }
 
 function ganttBarDblClick(ev, el) {
+    ganttCancelBarChainSingleClickTimer();
     if (ganttBarSuppressNextDblClick) {
         ganttBarSuppressNextDblClick = false;
         ev.stopPropagation();
@@ -1833,6 +1985,70 @@ function ganttBarDblClick(ev, el) {
     positionTooltip(ev);
 }
 
+/**
+ * 区間 iv の時間帯に含まれる任意の瞬間で、同時に進行中の区間数の最大値（1 なら他と時間重なりなし）。
+ */
+function ganttMaxConcurrentDuring(computed, iv) {
+    const lo = iv.s;
+    const hi = iv.e;
+    if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)) return 1;
+    const eps = 1;
+    const sampleTs = new Set();
+    const addSample = (t) => {
+        if (Number.isFinite(t) && t > lo && t < hi) sampleTs.add(t);
+    };
+    addSample(lo + eps);
+    addSample((lo + hi) / 2);
+    for (const o of computed) {
+        if (!(o.s < hi && o.e > lo)) continue;
+        if (o.s > lo && o.s < hi) addSample(o.s + eps);
+        if (o.e > lo && o.e < hi) addSample(o.e - eps);
+    }
+    let maxC = 1;
+    for (const t of sampleTs) {
+        let c = 0;
+        for (const o of computed) {
+            if (o.s < t && o.e > t) c++;
+        }
+        maxC = Math.max(maxC, c);
+    }
+    return Math.max(1, maxC);
+}
+
+/**
+ * 同一リソース行で時間が重なるバーを縦に積むためのレーン割当（区間の貪欲着色）。
+ * 各要素に .lane（0..n-1）と .numLanes（行全体のレーン数）を付与する。
+ */
+function assignGanttOverlapLanes(intervals) {
+    if (!intervals || !intervals.length) return;
+    const sorted = intervals.slice().sort((a, b) => {
+        const ds = a.s - b.s;
+        if (ds !== 0) return ds;
+        return a.e - b.e;
+    });
+    const laneEnds = [];
+    sorted.forEach((iv) => {
+        let lane = -1;
+        for (let L = 0; L < laneEnds.length; L++) {
+            if (laneEnds[L] <= iv.s) {
+                lane = L;
+                break;
+            }
+        }
+        if (lane === -1) {
+            lane = laneEnds.length;
+            laneEnds.push(iv.e);
+        } else {
+            laneEnds[lane] = Math.max(laneEnds[lane] || 0, iv.e);
+        }
+        iv.lane = lane;
+    });
+    const numLanes = Math.max(1, laneEnds.length);
+    sorted.forEach((iv) => {
+        iv.numLanes = numLanes;
+    });
+}
+
 function renderGantt() {
     let preserveScrollLeft = 0;
     let preserveScrollTop = 0;
@@ -1845,7 +2061,8 @@ function renderGantt() {
     if (ganttTooltipPinned) hideTooltip();
     const container = document.getElementById('gantt-root');
     if (!container) return;
-    const totalMs = END_DATE - START_DATE;
+    const startMs = START_DATE.getTime();
+    const totalMs = ganttSafeTimelineSpanMs();
 
     // Get unique machines (rows): WorkUser_ResOrder asc, then resource name asc
     const machineSet = [...new Set(TASKS.map(t => t.machine))].sort(compareGanttMachinesByResOrderThenName);
@@ -1922,7 +2139,7 @@ function renderGantt() {
     slots.forEach((slot, i) => {
         const isHour = VIEW === 'daily';
         const thCls = `gantt-th gantt-th--timeline${isHour && i % 1 === 0 ? ' hour-marker' : ''}`;
-        html += `<th class="${thCls}" style="width:${CELL_PX}px;min-width:${CELL_PX}px;font-size:${fsHeader}px;padding:${thPadV}px ${thPadH}px;">${escapeHtml(slot.label)}<span class="gantt-th-resize-handle" role="separator" aria-label="ドラッグでタイムライン全体をズーム" title="ドラッグでチャート全体の列幅（ズーム）を変更"></span></th>`;
+        html += `<th class="${thCls}" style="width:${CELL_PX}px;min-width:${CELL_PX}px;font-size:${fsHeader}px;padding:${thPadV}px ${thPadH}px;">${escapeHtml(slot.label)}<span class="gantt-th-resize-handle" role="separator" aria-label="Drag to zoom the entire timeline" title="Drag to change the chart column width (zoom)"></span></th>`;
     });
     html += '</tr></thead>';
 
@@ -1937,10 +2154,38 @@ function renderGantt() {
             <div style="font-family:'IBM Plex Mono',monospace; font-size:${fsSub}px; color:var(--text-dim); margin-top:2px;">${machineTasks.length} op${machineTasks.length !== 1 ? 's' : ''}</div>
         </td>`;
 
-        // Render all time cells as one wide cell with relative positioning
         const totalWidth = TIMELINE_W;
-        // 3行ラベル（品目(Group)・Lev・数量）が切れないよう、行の高さをラベルに合わせる
-        const timelineCellH = Math.max(ROW_H, Math.ceil(fsBar * 1.25 * 3 + barInset * 2 + 8));
+        // Render all time cells as one wide cell with relative positioning.
+        // 時間重なりがあるバーだけ縦分割；重ならないバーは行内高さ 100%（innerH）で表示。
+        const computed = [];
+        machineTasks.forEach((task) => {
+            const s = new Date(task.start);
+            const e = new Date(task.end);
+            const rawS = s.getTime();
+            const rawE = e.getTime();
+            if (!Number.isFinite(rawS) || !Number.isFinite(rawE)) return;
+            // Math.max/Math.min on Date coerces to number — do not call .getTime() on the result
+            const msS = Math.max(rawS, startMs);
+            const msE = Math.min(rawE, END_DATE.getTime());
+            if (msS >= msE) return;
+            const left = ((msS - startMs) / totalMs) * totalWidth;
+            const width = Math.max(4, ((msE - msS) / totalMs) * totalWidth);
+            computed.push({ task, s: msS, e: msE, left, width, right: left + width });
+        });
+        computed.sort((a, b) => a.left - b.left);
+
+        let numLanes = 1;
+        if (computed.length) {
+            assignGanttOverlapLanes(computed);
+            numLanes = Math.max(1, Number(computed[0].numLanes) || 1);
+        }
+        const labelMinH = Math.ceil(fsBar * 1.25 * 3 + barInset * 2 + 8);
+        const laneMin = Math.round(14 * z);
+        const laneGap = numLanes > 1 ? Math.max(1, Math.round(1 * z)) : 0;
+        const innerNeeded =
+            numLanes * laneMin + (numLanes > 1 ? (numLanes - 1) * laneGap : 0) + 2 * barInset;
+        const timelineCellH = Math.max(ROW_H, labelMinH, innerNeeded);
+
         html += `<td colspan="${slots.length}" style="position:relative; min-height:${timelineCellH}px; height:${timelineCellH}px; overflow:visible; padding:0; border-bottom:1px solid rgba(30,58,95,0.3); vertical-align:top;">`;
 
         // Draw vertical grid lines
@@ -1954,28 +2199,20 @@ function renderGantt() {
             }
         }
 
-        // Pre-compute geometry once so we can draw links and bars consistently.
-        const computed = [];
-        machineTasks.forEach(task => {
-            const s = new Date(task.start);
-            const e = new Date(task.end);
-            const clampedS = Math.max(s, START_DATE);
-            const clampedE = Math.min(e, END_DATE);
-            if (clampedS >= clampedE) return;
-            const left = ((clampedS - START_DATE) / totalMs) * totalWidth;
-            const width = Math.max(4, ((clampedE - clampedS) / totalMs) * totalWidth);
-            computed.push({ task, s, e, left, width, right: left + width });
-        });
-        computed.sort((a, b) => a.left - b.left);
+        const innerH = timelineCellH - 2 * barInset;
 
-        // Draw bars
-        computed.forEach(({ task, s, e, left, width }) => {
+        computed.forEach(({ task, s, e, left, width, lane }) => {
             const tBar = resolveTaskForGanttBar(task);
             const itemKey = getItemKey(tBar);
             const baseColor = itemColorMap[itemKey] || COLORS[0];
             const sc = getStatusColor(tBar.status) || baseColor;
 
-            const escapedTask = JSON.stringify(tBar).replace(/'/g, "\\'");
+            let escapedTask = '{}';
+            try {
+                escapedTask = JSON.stringify(tBar).replace(/'/g, "\\'");
+            } catch (err) {
+                escapedTask = JSON.stringify({ id: tBar.id, machine: tBar.machine }).replace(/'/g, "\\'");
+            }
             const setupMins = Number(tBar.setup_minutes || 0);
             const durMins = Math.max(1, (e - s) / 60000);
             const setupRatio = setupMins > 0 ? Math.min(1, setupMins / durMins) : 0;
@@ -1984,9 +2221,24 @@ function renderGantt() {
             const dragCls = tBar.id != null && String(tBar.id) !== '' ? ' gantt-bar--draggable' : '';
             const resizeHandles = ganttBarResizeHandlesMarkup(tBar);
 
+            const laneIdx = typeof lane === 'number' ? lane : 0;
+            const overlapDepth = ganttMaxConcurrentDuring(computed, { s, e });
+            let topPx;
+            let barH;
+            if (overlapDepth <= 1) {
+                topPx = barInset;
+                barH = innerH;
+            } else {
+                const stackGap = laneGap;
+                const barHRaw = (innerH - stackGap * (overlapDepth - 1)) / overlapDepth;
+                barH = Number.isFinite(barHRaw) && barHRaw > 0 ? barHRaw : innerH / overlapDepth;
+                topPx = barInset + laneIdx * (barH + stackGap);
+            }
+
             html += `<div class="gantt-bar${dragCls}"
                 data-bar-fs="${fsBar}"
-                style="left:${left}px; width:${width}px; top:${barInset}px; bottom:${barInset}px; background:${sc.bg}; border-color:${sc.border};"
+                data-schedule-id="${tBar.id != null && String(tBar.id) !== '' ? escapeHtml(String(tBar.id)) : ''}"
+                style="left:${left}px; width:${width}px; top:${topPx}px; height:${barH}px; bottom:auto; background:${sc.bg}; border-color:${sc.border};"
                 data-operation-code="${escapeHtml(tBar.operation_code || tBar.process_name || '')}"
                 data-next-operation-code="${escapeHtml(tBar.next_operation_code || '')}"
                 data-operation-id="${escapeHtml(tBar.operation_id || '')}"
@@ -2005,10 +2257,12 @@ function renderGantt() {
         html += '</td></tr>';
     });
 
-    html += '</tbody></table></div></div><div class="gantt-scroll-hbar" id="gantt-scroll-hbar" aria-label="Horizontal timeline scroll" title="タイムラインを左右にスクロール"><div class="gantt-scroll-hbar-inner" id="gantt-scroll-hbar-inner"></div></div></div>';
+    html += '</tbody></table></div></div><div class="gantt-scroll-hbar" id="gantt-scroll-hbar" aria-label="Horizontal timeline scroll" title="Scroll the timeline horizontally"><div class="gantt-scroll-hbar-inner" id="gantt-scroll-hbar-inner"></div></div></div>';
     container.innerHTML = html;
 
     drawNextOperationLinks();
+    syncGanttLotChainBarClasses();
+    bindGanttOverlayLinksScrollRedraw();
     setupGanttSyncedHorizontalBar();
     bindResourceRowClickHandlers();
     if (selectedResourceName) renderResourceOperationDetail(selectedResourceName);
@@ -2031,7 +2285,7 @@ function renderGantt() {
     const now = new Date();
     if (now >= START_DATE && now <= END_DATE) {
         const totalWidth = TIMELINE_W;
-        const pct = (now - START_DATE) / (END_DATE - START_DATE);
+        const pct = (now.getTime() - startMs) / totalMs;
         const nowX = LABEL_W + pct * totalWidth;
         const nowLine = document.createElement('div');
         nowLine.className = 'now-line';
@@ -2040,15 +2294,222 @@ function renderGantt() {
     }
 }
 
+function ganttCancelBarChainSingleClickTimer() {
+    if (ganttBarSingleClickChainTimer) {
+        clearTimeout(ganttBarSingleClickChainTimer);
+        ganttBarSingleClickChainTimer = null;
+    }
+}
+
+function ganttLotGroupingKey(t) {
+    const oi = String(t.order_item_code || '').trim();
+    if (oi) return 'oi:' + oi;
+    const oid = String(t.order_id || '').trim();
+    if (oid) return 'oid:' + oid;
+    return '';
+}
+
+/** Work_Code と表示上の工程コード（Work_Code 無し時は工程名） */
+function ganttWorkCode(t) {
+    if (!t) return '';
+    return String(t.operation_code || t.process_name || '').trim();
+}
+
+/** 同一ロット（注文品目 or 注文）内で next リンクで前後に繋がるスケジュール id の集合 */
+function ganttComputeLotChainConnectedIds(centerTask) {
+    const centerId = String(centerTask.id);
+    const out = new Set([centerId]);
+    const key = ganttLotGroupingKey(centerTask);
+    if (!key) return out;
+    const inLot = TASKS.filter((x) => ganttLotGroupingKey(x) === key);
+    if (!inLot.length) return out;
+    const fwd = new Map();
+    const rev = new Map();
+    function addEdge(a, b) {
+        if (!fwd.has(a)) fwd.set(a, []);
+        fwd.get(a).push(b);
+        if (!rev.has(b)) rev.set(b, []);
+        rev.get(b).push(a);
+    }
+    const ncode = (x) => String(x.next_operation_code || '').trim();
+    const nid = (x) => String(x.next_operation_id || '').trim();
+    const uidStr = (x) => String(x.operation_id || '').trim();
+    for (const t of inLot) {
+        const from = String(t.id);
+        const nc = ncode(t);
+        const ni = nid(t);
+        if (!nc && !ni) continue;
+        for (const u of inLot) {
+            if (String(u.id) === from) continue;
+            const hit = (nc && ganttWorkCode(u) === nc) || (ni && uidStr(u) === ni && ni !== '');
+            if (hit) addEdge(from, String(u.id));
+        }
+    }
+    const stack = [centerId];
+    while (stack.length) {
+        const cur = stack.pop();
+        for (const nx of fwd.get(cur) || []) {
+            if (!out.has(nx)) {
+                out.add(nx);
+                stack.push(nx);
+            }
+        }
+        for (const nx of rev.get(cur) || []) {
+            if (!out.has(nx)) {
+                out.add(nx);
+                stack.push(nx);
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * next が繋がらず連結成分がクリック 1 件だけのとき、画面上の同一ロット id をハイライト集合に加える。
+ */
+function ganttMergeVisibleLotFallbackBars(centerTask, idSet) {
+    const key = ganttLotGroupingKey(centerTask);
+    if (!key || idSet.size !== 1) return new Set(idSet);
+    const wrap = document.querySelector('.gantt-overlay-wrap');
+    if (!wrap) return new Set(idSet);
+    const inLot = TASKS.filter((x) => ganttLotGroupingKey(x) === key);
+    const hasBarDom = (tid) =>
+        [...wrap.querySelectorAll('.gantt-bar[data-schedule-id]')].some(
+            (b) => b.getAttribute('data-schedule-id') === String(tid),
+        );
+    const vis = inLot
+        .filter((x) => hasBarDom(x.id))
+        .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    if (vis.length < 2) return new Set(idSet);
+    const out = new Set(idSet);
+    vis.forEach((t) => out.add(String(t.id)));
+    return out;
+}
+
+/**
+ * BFS/next で繋がった成分のうち、同一ロットを開始時刻順に並べたとき「最も遅い開始」の行より前の
+ * 全作業も枠対象に含める（Line C QA から Line C だけでなく、その前工程まで黄枠を伸ばす）。
+ */
+function ganttExpandLotChainPrefixByTime(centerTask, idSet) {
+    const key = ganttLotGroupingKey(centerTask);
+    if (!key || !idSet.size) return new Set(idSet);
+    const sortedLot = TASKS.filter((x) => ganttLotGroupingKey(x) === key)
+        .slice()
+        .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    const idxs = [];
+    for (let i = 0; i < sortedLot.length; i++) {
+        if (idSet.has(String(sortedLot[i].id))) idxs.push(i);
+    }
+    if (!idxs.length) return new Set(idSet);
+    const hi = Math.max(...idxs);
+    const out = new Set(idSet);
+    for (let i = 0; i <= hi; i++) out.add(String(sortedLot[i].id));
+    return out;
+}
+
+function syncGanttLotChainBarClasses() {
+    document.querySelectorAll('.gantt-bar--chain-member').forEach((el) => {
+        el.classList.remove('gantt-bar--chain-member');
+    });
+    if (ganttLotChainScheduleId == null || !ganttLotChainHighlightedIds.size) return;
+    document.querySelectorAll('.gantt-bar[data-schedule-id]').forEach((el) => {
+        const s = el.getAttribute('data-schedule-id');
+        if (!s || !ganttLotChainHighlightedIds.has(s)) return;
+        el.classList.add('gantt-bar--chain-member');
+    });
+}
+
+function ganttClearLotChain() {
+    if (ganttLotChainScheduleId == null && !ganttLotChainHighlightedIds.size) return;
+    ganttLotChainScheduleId = null;
+    ganttLotChainHighlightedIds = new Set();
+    syncGanttLotChainBarClasses();
+    drawNextOperationLinks();
+}
+
+function ganttToggleLotChainForBar(bar) {
+    let task;
+    try {
+        task = JSON.parse(bar.dataset.task || '{}');
+    } catch (err) {
+        return;
+    }
+    if (task.id == null || String(task.id) === '') return;
+    const idStr = String(task.id);
+    if (ganttLotChainScheduleId != null && String(ganttLotChainScheduleId) === idStr) {
+        ganttLotChainScheduleId = null;
+        ganttLotChainHighlightedIds = new Set();
+    } else {
+        ganttLotChainScheduleId = task.id;
+        const base = ganttComputeLotChainConnectedIds(task);
+        const merged = ganttMergeVisibleLotFallbackBars(task, base);
+        ganttLotChainHighlightedIds = ganttExpandLotChainPrefixByTime(task, merged);
+    }
+    syncGanttLotChainBarClasses();
+    drawNextOperationLinks();
+}
+
+function ganttBarGeomRelativeToWrap(el, wrapRect) {
+    const r = el.getBoundingClientRect();
+    const x1 = r.left - wrapRect.left;
+    const y1 = r.top - wrapRect.top;
+    return { xStart: x1, xEnd: x1 + r.width, yMid: y1 + r.height / 2 };
+}
+
+function bindGanttOverlayLinksScrollRedraw() {
+    const mainEl = document.getElementById('gantt-scroll-main');
+    if (!mainEl || mainEl._ganttLinkScrollBound) return;
+    mainEl._ganttLinkScrollBound = true;
+    let t = null;
+    mainEl.addEventListener(
+        'scroll',
+        () => {
+            if (t) clearTimeout(t);
+            t = setTimeout(() => {
+                t = null;
+                drawNextOperationLinks();
+            }, 48);
+        },
+        { passive: true },
+    );
+}
+
+function onGanttWrapperClickLotChain(e) {
+    if (performance.now() < ganttSuppressBarChainClickUntil) return;
+    const bar = e.target.closest('.gantt-bar');
+    if (!bar || e.target.closest('.gantt-bar-qty-hit') || e.target.closest('.gantt-bar-resize')) {
+        if (!e.target.closest('.gantt-bar')) {
+            if (e.target.closest('#gantt-scroll-hbar') || e.target.closest('#gantt-scroll-hbar-inner')) {
+                ganttCancelBarChainSingleClickTimer();
+                return;
+            }
+            ganttCancelBarChainSingleClickTimer();
+            ganttClearLotChain();
+        }
+        return;
+    }
+    if (e.detail !== 1) {
+        ganttCancelBarChainSingleClickTimer();
+        return;
+    }
+    ganttCancelBarChainSingleClickTimer();
+    ganttBarSingleClickChainTimer = setTimeout(() => {
+        ganttBarSingleClickChainTimer = null;
+        ganttToggleLotChainForBar(bar);
+    }, 280);
+}
+
 function drawNextOperationLinks() {
     const wrap = document.querySelector('.gantt-overlay-wrap');
     const svg = document.getElementById('gantt-links-overlay');
     if (!wrap || !svg) return;
 
     const bars = [...wrap.querySelectorAll('.gantt-bar')];
-    if (!bars.length) return;
+    if (!bars.length) {
+        svg.innerHTML = '';
+        return;
+    }
 
-    // Size overlay to content box
     const wrapRect = wrap.getBoundingClientRect();
     const w = wrap.scrollWidth || wrapRect.width;
     const h = wrap.scrollHeight || wrapRect.height;
@@ -2056,7 +2517,6 @@ function drawNextOperationLinks() {
     svg.setAttribute('height', String(h));
     svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
 
-    // Helper: get family base from WorkUser_OrderItem (before numeric suffix)
     function getFamily(code) {
         if (!code) return '';
         const parts = code.split('-');
@@ -2066,79 +2526,64 @@ function drawNextOperationLinks() {
         return code;
     }
 
-    const selectedFamily = ITEM_FILTER && ITEM_FILTER !== '__ALL__'
-        ? getFamily(ITEM_FILTER)
-        : '';
+    const selectedFamily = ITEM_FILTER && ITEM_FILTER !== '__ALL__' ? getFamily(ITEM_FILTER) : '';
 
-    // Map operation_code / operation_id -> geometry (filtered by selected family if any)
-    const codeMap = new Map();
-    const idMap = new Map();
-    bars.forEach(el => {
-        const oi = el.dataset.orderItemCode || '';
-        if (selectedFamily && getFamily(oi) !== selectedFamily) return;
-        const opCode = el.dataset.operationCode || '';
-        const opId = el.dataset.operationId || '';
-        if (!opCode && !opId) return;
-        const r = el.getBoundingClientRect();
-        const x1 = r.left - wrapRect.left;
-        const y1 = r.top - wrapRect.top;
-        const geom = {
-            xStart: x1,
-            xEnd: x1 + r.width,
-            yMid: y1 + r.height / 2,
-        };
-        if (opCode) codeMap.set(opCode, geom);
-        if (opId) idMap.set(opId, geom);
-    });
-
-    const stroke = 'rgba(0,0,0,0.28)';
-    const strokeWidth = 1.25;
-    const dash = '4 3';
-    const arrow = 5;
     const lines = [];
-    // If Not Selected, do not draw any links.
-    if (!ITEM_FILTER) {
-        svg.innerHTML = '';
-        return;
+
+    if (ITEM_FILTER && ITEM_FILTER !== '__ALL__') {
+        const codeMap = new Map();
+        const idMap = new Map();
+        bars.forEach((el) => {
+            const oi = el.dataset.orderItemCode || '';
+            if (selectedFamily && getFamily(oi) !== selectedFamily) return;
+            const opCode = el.dataset.operationCode || '';
+            const opId = el.dataset.operationId || '';
+            if (!opCode && !opId) return;
+            const geom = ganttBarGeomRelativeToWrap(el, wrapRect);
+            if (opCode) codeMap.set(opCode, geom);
+            if (opId) idMap.set(opId, geom);
+        });
+
+        const stroke = 'rgba(0,0,0,0.28)';
+        const strokeWidth = 1.25;
+        const dash = '4 3';
+        const arrow = 5;
+
+        bars.forEach((el) => {
+            const oi = el.dataset.orderItemCode || '';
+            if (selectedFamily && getFamily(oi) !== selectedFamily) return;
+            const opCode = el.dataset.operationCode || '';
+            const nextCode = el.dataset.nextOperationCode || '';
+            const opId = el.dataset.operationId || '';
+            const nextId = el.dataset.nextOperationId || '';
+
+            let a = null;
+            let b = null;
+            if (opCode && nextCode) {
+                a = codeMap.get(opCode);
+                b = codeMap.get(nextCode);
+            }
+            if (!a || !b) {
+                if (!opId || !nextId) return;
+                a = idMap.get(opId);
+                b = idMap.get(nextId);
+            }
+            if (!a || !b) return;
+            const xA = a.xEnd;
+            const yA = a.yMid;
+            const xB = b.xStart;
+            const yB = b.yMid;
+            const mid1 = xA + 8;
+            const mid2 = xB - 8;
+            const d = `M ${xA} ${yA} L ${mid1} ${yA} L ${mid2} ${yB} L ${xB} ${yB}`;
+            lines.push(`<path class="gantt-link-item-filter" d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" />`);
+            const ah1 = `${xB} ${yB}`;
+            const ah2 = `${xB - arrow} ${yB - arrow / 1.5}`;
+            const ah3 = `${xB - arrow} ${yB + arrow / 1.5}`;
+            lines.push(`<polygon class="gantt-link-item-filter" points="${ah1} ${ah2} ${ah3}" fill="${stroke}" />`);
+        });
     }
 
-    bars.forEach(el => {
-        const oi = el.dataset.orderItemCode || '';
-        if (selectedFamily && getFamily(oi) !== selectedFamily) return;
-        const opCode = el.dataset.operationCode || '';
-        const nextCode = el.dataset.nextOperationCode || '';
-        const opId = el.dataset.operationId || '';
-        const nextId = el.dataset.nextOperationId || '';
-
-        // Prefer Work_NextOperationCode -> Work_Code linking
-        let a = null;
-        let b = null;
-        if (opCode && nextCode) {
-            a = codeMap.get(opCode);
-            b = codeMap.get(nextCode);
-        }
-        // Fallback to ID linking
-        if (!a || !b) {
-            if (!opId || !nextId) return;
-            a = idMap.get(opId);
-            b = idMap.get(nextId);
-        }
-        if (!a || !b) return;
-        // Draw a polyline: end -> (end+6) -> (start-6) -> start, with small arrow head.
-        const xA = a.xEnd;
-        const yA = a.yMid;
-        const xB = b.xStart;
-        const yB = b.yMid;
-        const mid1 = xA + 8;
-        const mid2 = xB - 8;
-        const d = `M ${xA} ${yA} L ${mid1} ${yA} L ${mid2} ${yB} L ${xB} ${yB}`;
-        lines.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-dasharray="${dash}" />`);
-        // Arrow head at target
-        const ah1 = `${xB} ${yB}`;
-        const ah2 = `${xB - arrow} ${yB - arrow/1.5}`;
-        const ah3 = `${xB - arrow} ${yB + arrow/1.5}`;
-        lines.push(`<polygon points="${ah1} ${ah2} ${ah3}" fill="${stroke}" />`);
-    });
     svg.innerHTML = lines.join('');
 }
 
@@ -2183,10 +2628,12 @@ async function refreshGanttTasksFromApi() {
     const dateStr = navDate && navDate.value ? navDate.value : '';
     const sel = document.getElementById('gantt-machine-select');
     const machine = sel ? String(sel.value || '') : '';
-    const qs = new URLSearchParams();
+    const qs = new URLSearchParams(window.location.search);
     qs.set('view', VIEW);
     if (dateStr) qs.set('date', dateStr);
+    else qs.delete('date');
     if (machine) qs.set('machine', machine);
+    else qs.delete('machine');
     const res = await fetch(`/api/gantt_data?${qs.toString()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -2195,11 +2642,62 @@ async function refreshGanttTasksFromApi() {
     renderGantt();
 }
 
+function syncGanttNavigationAnchors(machine) {
+    const m = String(machine || '').trim();
+    document.querySelectorAll('a[data-gantt-query-link="1"]').forEach((a) => {
+        try {
+            const href = a.getAttribute('href');
+            if (!href) return;
+            const u = new URL(href, window.location.origin);
+            if (m) u.searchParams.set('machine', m);
+            else u.searchParams.delete('machine');
+            const qs = u.searchParams.toString();
+            const path = u.pathname || window.location.pathname;
+            a.setAttribute('href', path + (qs ? `?${qs}` : ''));
+        } catch (e) { /* ignore */ }
+    });
+}
+
+async function applyGanttResourceFilterWithoutReload() {
+    const sel = document.getElementById('gantt-machine-select');
+    if (!sel) return;
+    const machine = String(sel.value || '').trim();
+
+    // renderGantt 内で詳細パネル・行ハイライトが同期されるよう、先に表示対象リソースを合わせる
+    selectedResourceName = machine;
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', VIEW);
+    const navDate = document.getElementById('gantt-nav-date');
+    if (navDate && navDate.value) url.searchParams.set('date', navDate.value);
+    else url.searchParams.delete('date');
+    if (machine) url.searchParams.set('machine', machine);
+    else url.searchParams.delete('machine');
+    try {
+        history.replaceState({}, '', url.pathname + url.search);
+    } catch (e) { /* ignore */ }
+
+    syncGanttNavigationAnchors(machine);
+
+    const wrap = document.getElementById('gantt-wrapper');
+    if (wrap) wrap.classList.toggle('gantt-container--filtered', Boolean(machine));
+
+    try {
+        await refreshGanttTasksFromApi();
+    } catch (e) {
+        alert('Failed to refresh chart: ' + (e && e.message ? e.message : e));
+        return;
+    }
+    if (!machine) {
+        renderResourceOperationDetail('');
+    }
+}
+
 async function onGanttFrozenClick() {
     const inp = document.getElementById('gantt-frozen-date');
     const btn = document.getElementById('gantt-frozen-btn');
     if (!inp || !inp.value) {
-        alert('日付を選択してください。');
+        alert('Please select a date.');
         return;
     }
     const cutoff = inp.value;
@@ -2223,12 +2721,12 @@ async function onGanttFrozenClick() {
         });
         const out = await res.json().catch(() => ({}));
         if (!res.ok || !out.ok) {
-            alert(out.error || `更新に失敗しました (${res.status})`);
+            alert(out.error || `Update failed (${res.status})`);
             return;
         }
         await refreshGanttTasksFromApi();
     } catch (e) {
-        alert('通信エラー: ' + (e && e.message ? e.message : e));
+        alert('Communication error: ' + (e && e.message ? e.message : e));
     } finally {
         if (btn) btn.disabled = false;
     }
@@ -2568,7 +3066,22 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('gantt-wrapper')?.addEventListener('pointerdown', onGanttWrapperPointerDown);
+document.getElementById('gantt-wrapper')?.addEventListener('click', onGanttWrapperClickLotChain);
 document.getElementById('gantt-frozen-btn')?.addEventListener('click', onGanttFrozenClick);
+(function bindGanttMachineFilterNoReload() {
+    const form = document.getElementById('gantt-machine-form');
+    const machineSel = document.getElementById('gantt-machine-select');
+    if (form) {
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+        });
+    }
+    if (machineSel) {
+        machineSel.addEventListener('change', () => {
+            void applyGanttResourceFilterWithoutReload();
+        });
+    }
+})();
 document.getElementById('gantt-root')?.addEventListener('click', (e) => {
     const cell = e.target.closest('.gantt-row-label');
     if (!cell) return;

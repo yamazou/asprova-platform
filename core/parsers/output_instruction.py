@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Mapping, Optional
 
-from core.asprova_parser import parse_datetime
+from .asprova import parse_datetime
 
 
 def detect_output_instruction_columns(headers: list[str]) -> Dict[str, str]:
@@ -49,6 +49,11 @@ def detect_output_instruction_columns(headers: list[str]) -> Dict[str, str]:
         "outputworkinst_operationcode",
         "operationcode",
         "operation_code",
+    )
+    mapping["customer"] = find_col(
+        "outputworkinst_customer",
+        "customer",
+        "customer_code",
     )
     return mapping
 
@@ -106,4 +111,5 @@ def parse_output_instruction_row(
         "object_status_flag_ext": _get_val(mapping, row, "object_status_flag_ext") or None,
         "flag_date": _get_val(mapping, row, "flag_date") or None,
         "operation_code": _get_val(mapping, row, "operation_code") or None,
+        "customer": _get_val(mapping, row, "customer") or None,
     }

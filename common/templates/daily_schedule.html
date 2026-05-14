@@ -1,0 +1,378 @@
+{% extends "base.html" %}
+
+{% block title %}Daily Schedule{% endblock %}
+
+{% block extra_styles %}
+<style>
+.daily-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.daily-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.daily-filter-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.daily-filter-form label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.daily-filter-form select,
+.daily-filter-form input[type="date"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  outline: none;
+}
+.daily-page-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+#daily-export-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+#daily-export-overlay.show { display: flex; }
+#daily-export-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 28px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  min-width: 320px;
+  max-width: 520px;
+}
+.daily-export-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 10px;
+}
+.daily-export-desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+.daily-export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.daily-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+.daily-scroll {
+  max-height: 72vh;
+  overflow: auto;
+}
+.daily-sheet {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: #111827;
+}
+.daily-sheet th,
+.daily-sheet td {
+  border: 1px solid #8ca0b3;
+  padding: 4px 6px;
+  min-width: 58px;
+  height: 24px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.daily-sheet thead th {
+  background: #d9ead3;
+  color: #111827;
+  font-weight: 700;
+  text-align: center;
+}
+.daily-sheet thead tr:first-child th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+.daily-sheet .daily-title-row th {
+  background: #ffffff;
+  border-color: #ffffff;
+  text-align: left;
+  font-size: 14px;
+  height: 28px;
+}
+.daily-sheet .daily-process-row th {
+  background: #ffffff;
+  border-color: #ffffff;
+  text-align: left;
+  font-size: 12px;
+  height: 24px;
+}
+.daily-sheet .daily-reguler-cell {
+  text-align: center;
+}
+.daily-sheet .daily-date-head {
+  background: #fce4d6;
+}
+.daily-sheet .daily-shift-head {
+  background: #fff2cc;
+}
+.daily-sheet .daily-sub-head {
+  background: #e2f0d9;
+}
+.daily-sheet .daily-num {
+  text-align: right;
+}
+.daily-sheet .daily-text {
+  text-align: left;
+}
+.daily-sheet tbody tr:nth-child(even) td {
+  background: #f8fff3;
+}
+.daily-sheet tbody tr:hover td {
+  background: #eaf6ff;
+}
+.daily-no { min-width: 64px; }
+.daily-part { min-width: 190px; }
+.daily-ct { min-width: 92px; }
+.daily-pcs { min-width: 78px; }
+.daily-line { min-width: 84px; }
+.daily-process { min-width: 130px; }
+.daily-material { min-width: 240px; }
+.daily-wide { min-width: 110px; }
+.daily-empty {
+  padding: 36px;
+  text-align: center;
+  color: var(--text-dim);
+  background: var(--surface);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Daily Schedule</div>
+    <div class="page-subtitle">SCHEDULE PROSES PRODUKSI - {{ selected_date_label }}</div>
+    <div class="daily-toolbar">
+      <div class="daily-controls">
+      <div class="nav-arrows" style="margin-top:6px;">
+        <a href="{{ url_for('daily_schedule_view', date=prev_date, process=process_filter) }}">&larr; Prev</a>
+        <span class="date-label">{{ current_date.strftime('%A, %B %d, %Y') }}</span>
+        <a href="{{ url_for('daily_schedule_view', date=next_date, process=process_filter) }}">Next &rarr;</a>
+      </div>
+      <form method="GET" class="daily-filter-form">
+        <label for="daily-process">Process</label>
+        <select id="daily-process" name="process">
+          <option value="">All Process</option>
+          {% for p in processes %}
+          <option value="{{ p }}" {% if process_filter == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+        <label for="daily-date">Date</label>
+        <input id="daily-date" type="date" name="date" value="{{ selected_date }}">
+        <button type="submit" class="btn btn-sm btn-primary">Apply</button>
+      </form>
+      </div>
+    </div>
+  </div>
+  <div class="daily-page-actions">
+    <a
+      href="{{ url_for('export_daily_schedule', date=selected_date, process=process_filter) }}"
+      class="btn btn-primary"
+      id="daily-export-link"
+    >Export Excel</a>
+  </div>
+</div>
+
+<div id="daily-export-overlay" aria-hidden="true">
+  <div id="daily-export-box">
+    <div class="daily-export-title">Export Excel</div>
+    <div class="daily-export-desc">
+      Export the Daily Schedule table to an Excel file. Click OK to proceed.<br>
+      (The save location follows your browser download settings.)
+    </div>
+    <div class="daily-export-actions">
+      <button type="button" class="btn" id="daily-export-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="daily-export-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="daily-card">
+  <div class="daily-scroll">
+    <table class="daily-sheet">
+      <thead>
+        <tr class="daily-title-row">
+          <th colspan="47">SCHEDULE PROSES PRODUKSI</th>
+        </tr>
+        <tr class="daily-process-row">
+          <th colspan="42">LINE PRESSING{% if process_filter %} - {{ process_filter }}{% endif %}</th>
+          <th colspan="5" class="daily-reguler-cell">REGULER</th>
+        </tr>
+        <tr>
+          <th class="daily-no" rowspan="3">NO</th>
+          <th class="daily-part" rowspan="3">NAMA PART</th>
+          <th class="daily-ct" rowspan="3">CT (detik) BARU</th>
+          <th class="daily-pcs" rowspan="3">PCS/JAM</th>
+          <th class="daily-line" rowspan="3">LINE</th>
+          <th class="daily-process" rowspan="3">PROSES</th>
+          <th colspan="3" rowspan="2">STANDAR PACKING</th>
+          <th rowspan="3">MC</th>
+          <th class="daily-material" rowspan="3">MATERIAL</th>
+          <th class="daily-wide" rowspan="3">FIX MESIN</th>
+          <th class="daily-wide" rowspan="3">PLAN MESIN KE 2</th>
+          <th class="daily-wide" rowspan="3">MTL PLATE - IRIS /PCS</th>
+          <th class="daily-wide" rowspan="3">KEBUTUHAN/ PLATE</th>
+          <th rowspan="3">KATEGORI</th>
+          <th rowspan="3">RATE</th>
+          <th rowspan="3">QTY PLAN</th>
+          <th rowspan="3">OPERATOR</th>
+          <th rowspan="3">MC</th>
+          <th class="daily-date-head" colspan="22">{{ selected_date_label }}</th>
+          <th rowspan="3">NG</th>
+          <th rowspan="3">KIP</th>
+          <th class="daily-wide" rowspan="3">CLAIM CUSTOMER</th>
+          <th class="daily-wide" rowspan="3">REMARK</th>
+          <th rowspan="3">SPOT</th>
+        </tr>
+        <tr>
+          <th class="daily-shift-head" colspan="11">SHIFT 1</th>
+          <th class="daily-shift-head" colspan="11">SHIFT 2</th>
+        </tr>
+        <tr>
+          <th class="daily-sub-head">TYPE</th>
+          <th class="daily-sub-head">BOX</th>
+          <th class="daily-sub-head">QTY</th>
+          <th class="daily-sub-head">PLAN</th>
+          {% for h in range(1, 10) %}
+          <th class="daily-sub-head">{{ h }}</th>
+          {% endfor %}
+          <th class="daily-sub-head">ACT</th>
+          <th class="daily-sub-head">PLAN</th>
+          {% for h in range(1, 10) %}
+          <th class="daily-sub-head">{{ h }}</th>
+          {% endfor %}
+          <th class="daily-sub-head">ACT</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if daily_rows %}
+          {% for row in daily_rows %}
+          <tr>
+            <td class="daily-text">{{ row.no }}</td>
+            <td class="daily-text">{{ row.part_name }}</td>
+            <td class="daily-num">{{ row.cycle_time }}</td>
+            <td class="daily-num">{{ row.pcs_per_hour }}</td>
+            <td class="daily-text">{{ row.line }}</td>
+            <td class="daily-text">{{ row.process }}</td>
+            <td class="daily-text">{{ row.packing_type }}</td>
+            <td class="daily-text">{{ row.packing_box }}</td>
+            <td class="daily-num">{{ row.packing_qty }}</td>
+            <td class="daily-text">{{ row.machine }}</td>
+            <td class="daily-text">{{ row.material }}</td>
+            <td class="daily-num">{{ row.fix_machine }}</td>
+            <td class="daily-num">{{ row.plan_machine_2 }}</td>
+            <td class="daily-num">{{ row.material_plate }}</td>
+            <td class="daily-num">{{ row.plate_need }}</td>
+            <td class="daily-text">{{ row.category }}</td>
+            <td class="daily-text">{{ row.rate }}</td>
+            <td class="daily-num">{{ row.qty_plan }}</td>
+            <td class="daily-text">{{ row.operator }}</td>
+            <td class="daily-text">{{ row.mc_secondary }}</td>
+            <td class="daily-num">{{ row.shift1_plan }}</td>
+            {% for v in row.shift1_hours %}
+            <td class="daily-num">{{ v }}</td>
+            {% endfor %}
+            <td class="daily-num">{{ row.shift1_act }}</td>
+            <td class="daily-num">{{ row.shift2_plan }}</td>
+            {% for v in row.shift2_hours %}
+            <td class="daily-num">{{ v }}</td>
+            {% endfor %}
+            <td class="daily-num">{{ row.shift2_act }}</td>
+            <td class="daily-num">{{ row.ng }}</td>
+            <td class="daily-text">{{ row.kip }}</td>
+            <td class="daily-num">{{ row.claim_customer }}</td>
+            <td class="daily-text">{{ row.remark }}</td>
+            <td class="daily-num">{{ row.spot }}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="47" class="daily-empty">No Daily Schedule records for the selected Process and Date.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var link = document.getElementById('daily-export-link');
+  var overlay = document.getElementById('daily-export-overlay');
+  var okBtn = document.getElementById('daily-export-ok');
+  var cancelBtn = document.getElementById('daily-export-cancel');
+  if (!link || !overlay || !okBtn || !cancelBtn) return;
+
+  var href = link.getAttribute('href');
+  function openPopup() {
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+  function closePopup() {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  link.addEventListener('click', function(e) {
+    e.preventDefault();
+    openPopup();
+  });
+  okBtn.addEventListener('click', function() {
+    closePopup();
+    window.location.href = href;
+  });
+  cancelBtn.addEventListener('click', function() {
+    closePopup();
+  });
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) closePopup();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closePopup();
+  });
+})();
+</script>
+{% endblock %}

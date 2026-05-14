@@ -27,8 +27,7 @@
     width: 90px;
     position: sticky;
     top: 0;
-    z-index: 2;
-    position: sticky;
+    z-index: 1;
     overflow: visible;
 }
 .psi-item {
@@ -58,10 +57,25 @@
 .psi-table .psi-begbal {
     position: static;
 }
+.psi-table.phc-freeze-begbal .psi-begbal {
+    position: sticky;
+    left: 210px;
+    z-index: 55;
+    background: var(--surface);
+}
+.psi-table.phc-freeze-begbal th.psi-begbal {
+    z-index: 80;
+    background: var(--surface2);
+}
+.psi-table.phc-freeze-begbal td.psi-begbal {
+    z-index: 55;
+    /* Draw a seam so date headers/cells never visually bleed over sticky column. */
+    box-shadow: 1px 0 0 rgba(30,58,95,0.5);
+}
 .psi-table th.psi-item,
 .psi-table th.psi-type,
 .psi-table th.psi-begbal {
-    z-index: 4;
+    z-index: 60;
     background: var(--surface2);
 }
 .psi-row-even {
@@ -153,7 +167,7 @@
     width: 10px;
     bottom: 0;
     cursor: col-resize;
-    z-index: 40;
+    z-index: 5;
     background: transparent;
     box-sizing: border-box;
 }
@@ -205,7 +219,7 @@
         <div class="psi-scroll psi-scroll--zoom" id="psi-scroll-root">
         <div class="psi-zoom-spacer" id="psi-zoom-spacer" aria-hidden="true"></div>
         <div class="psi-zoom-inner" id="psi-zoom-inner">
-        <table class="psi-table">
+        <table class="psi-table{% if customer_view and customer_view.css.psi_table_extra_class %} {{ customer_view.css.psi_table_extra_class }}{% endif %}">
             <thead>
                 <tr>
                     <th class="psi-header psi-item">Item</th>
@@ -223,10 +237,12 @@
                     {% for row in item.rows %}
                     <tr class="{{ row_class }}">
                         {% if loop.first %}
-                        <td class="psi-item" rowspan="3">{{ item.item }}</td>
+                        <td class="psi-item" rowspan="{{ item.rows|length }}">{{ item.item }}</td>
                         {% endif %}
-                        <td class="psi-type">{{ row.type }}</td>
-                        <td class="psi-begbal">{{ row.beg_bal }}</td>
+                        {% if row.type_rowspan > 0 %}
+                        <td class="psi-type" rowspan="{{ row.type_rowspan }}">{{ row.type_main }}</td>
+                        {% endif %}
+                        <td class="psi-begbal">{% if customer_view and customer_view.flags.psi_split_by_customer and row.type_sub %}{{ row.type_sub }}{% else %}{{ row.beg_bal }}{% endif %}</td>
                         {% for cell in row.cells %}
                         <td class="psi-cell">{{ cell }}</td>
                         {% endfor %}

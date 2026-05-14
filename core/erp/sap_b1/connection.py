@@ -36,5 +36,5 @@ def connect_sqlserver(
             last_err = e
             continue
     raise RuntimeError(
-        f"SQL Server に接続できません（ODBC ドライバを確認してください）。最後のエラー: {last_err}"
+        f"Could not connect to SQL Server. Check the ODBC driver. Last error: {last_err}"
     ) from last_err

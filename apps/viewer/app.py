@@ -15,6 +15,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
 except ImportError:
     Workbook = None
 from werkzeug.utils import secure_filename
@@ -25,22 +26,23 @@ COMMON_DIR = PLATFORM_ROOT / "common"
 sys.path.insert(0, str(PLATFORM_ROOT))
 from config.settings import DATA_DIR, DB_PATH, UPLOAD_FOLDER
 from config.bridge_customers import BRIDGE_CUSTOMERS
-from core.asprova_parser import (
+from core.parsers.asprova import (
     detect_columns,
     parse_schedule_upload_row,
     result_csv_export_headers,
     schedule_row_to_result_csv_cells,
 )
-from core.input_instruction_parser import (
+from core.parsers.input_instruction import (
     detect_input_instruction_columns,
     parse_input_instruction_row,
 )
-from core.output_instruction_parser import (
+from core.parsers.output_instruction import (
     detect_output_instruction_columns,
     parse_output_instruction_row,
 )
-from core.csv_loader import csv_dict_reader_from_bytes
-from core.sap_integrated_master import ensure_integrates_table
+from core.parsers.csv_loader import csv_dict_reader_from_bytes
+from core.integrated_master import ensure_integrates_table
+from core.customers import get_customer
 
 app = Flask(__name__, static_folder=str(COMMON_DIR / "static"))
 app.jinja_loader = ChoiceLoader(
@@ -55,10 +57,29 @@ ALLOWED_EXTENSIONS = {'csv'}
 GANTT_PAGE_HEADERS = {
     'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
     'Pragma': 'no-cache',
-    'X-Asprova-Gantt-Revision': '5',
+    'X-Asprova-Gantt-Revision': '8',
     # 一部環境で X-* のみ除去される場合の予備（レスポンスヘッダ一覧に出るか確認用）
-    'Asprova-Gantt-Revision': '5',
+    'Asprova-Gantt-Revision': '8',
 }
+
+# Gantt 上の表示リソース（plan または actual 解決後）がこの値の行は描画しない。
+GANTT_OMIT_DISPLAY_RESOURCE = 'DefaultInventoryResource'
+
+# Gantt / Monthly Result のリソース一覧（ドロップダウン）用: machine_name ∪ actual_resource
+_GANTT_MACHINES_RAW_SQL = """
+SELECT m AS machine_name FROM (
+    SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
+    WHERE machine_name IS NOT NULL
+      AND TRIM(machine_name) <> ''
+      AND TRIM(machine_name) <> 'DefaultInventoryResource'
+    UNION
+    SELECT DISTINCT TRIM(actual_resource) AS m FROM schedules
+    WHERE actual_resource IS NOT NULL
+      AND TRIM(actual_resource) <> ''
+      AND TRIM(actual_resource) <> 'DefaultInventoryResource'
+)
+ORDER BY m
+"""
 
 
 def _apply_gantt_cache_headers(response):
@@ -156,6 +177,9 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
         'setup_minutes': r['setup_minutes'],
         'work_group': rd.get('work_group') or '',
         'work_user_res_order': rd.get('work_user_res_order') or '',
+        'work_user_cycle_time': rd.get('work_user_cycle_time') or '',
+        'work_user_proc_name': rd.get('work_user_proc_name') or '',
+        'work_user_material': rd.get('work_user_material') or '',
         'delivery_date': rd.get('delivery_date') or '',
         'delivery_order_no': rd.get('delivery_order_no') or '',
         'delivery_item': rd.get('delivery_item') or '',
@@ -165,6 +189,21 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
     }
 
 
+def _gantt_tasks_omit_hidden_resources(tasks: list) -> list:
+    """Drop tasks whose display `machine` is the inventory pseudo-resource (not shown on Gantt)."""
+    hid = GANTT_OMIT_DISPLAY_RESOURCE
+    return [t for t in tasks if (t.get('machine') or '').strip() != hid]
+
+
+def _tasks_from_gantt_schedule_rows(records: list[sqlite3.Row]) -> list[dict]:
+    tasks = []
+    for r in records:
+        t = _sched_row_to_gantt_task(r)
+        if t:
+            tasks.append(t)
+    return _gantt_tasks_omit_hidden_resources(tasks)
+
+
 def _gantt_range_sql_clause():
     """WHERE fragment: plan window or actual window intersects [start_date, end_date)."""
     return (
@@ -172,6 +211,26 @@ def _gantt_range_sql_clause():
         '(actual_start IS NOT NULL AND actual_end IS NOT NULL '
         'AND actual_start < ? AND actual_end > ?))'
     )
+
+
+def _gantt_schedule_rows_in_window(
+    conn: sqlite3.Connection,
+    window_start: datetime,
+    window_end: datetime,
+    machine_filter: str = '',
+) -> list[sqlite3.Row]:
+    """Schedule rows overlapping the Gantt time window (plan or actual), optional resource filter."""
+    range_end = window_end.strftime('%Y-%m-%d %H:%M:%S')
+    range_start = window_start.strftime('%Y-%m-%d %H:%M:%S')
+    query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
+    params = [range_end, range_start, range_end, range_start]
+    query += " AND TRIM(COALESCE(item_id, '')) <> ''"
+    mf = (machine_filter or '').strip()
+    if mf:
+        query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
+        params.extend([mf, mf])
+    query += ' ORDER BY machine_name, start_time'
+    return conn.execute(query, params).fetchall()
 
 
 def _parse_work_user_res_order_val(v) -> float:
@@ -225,15 +284,235 @@ def _gantt_machines_sorted_for_dropdown(machine_rows: list, tasks: list) -> list
     return [{"machine_name": m} for m in ordered]
 
 
+def _machines_for_gantt_dropdown(
+    conn: sqlite3.Connection,
+    window_start: datetime,
+    window_end: datetime,
+    machine_filter: str = '',
+) -> list[dict]:
+    """
+    Gantt と同じ並びのリソース行（WorkUser_ResOrder 昇順 → 名）。machine_rows は全期間の DISTINCT 名。
+    Monthly Result のドロップダウンでも window 内タスクで同じソートにする。
+    """
+    machines_raw = conn.execute(_GANTT_MACHINES_RAW_SQL).fetchall()
+    records = _gantt_schedule_rows_in_window(conn, window_start, window_end, machine_filter)
+    tasks = _tasks_from_gantt_schedule_rows(records)
+    return _gantt_machines_sorted_for_dropdown(list(machines_raw), tasks)
+
+
+def _daily_schedule_process_name(row: sqlite3.Row) -> str:
+    rd = _sqlite_row_as_dict(row)
+    return (
+        str(rd.get("work_user_proc_name") or "").strip()
+        or str(row["process_name"] or "").strip()
+    )
+
+
+def _daily_schedule_float(raw) -> Optional[float]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s == "":
+        return None
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def _daily_schedule_fmt(raw) -> str:
+    v = _daily_schedule_float(raw)
+    if v is None:
+        return str(raw).strip() if raw is not None else ""
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v)):,}"
+    return f"{v:,.2f}".rstrip("0").rstrip(".")
+
+
+def _daily_schedule_date_range(date_str: str) -> tuple[datetime, datetime]:
+    try:
+        current_date = datetime.strptime(date_str, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        current_date = datetime.now()
+    start_date = datetime(current_date.year, current_date.month, current_date.day)
+    return start_date, start_date + timedelta(days=1)
+
+
+def _build_daily_schedule_rows(schedule_rows: list[sqlite3.Row]) -> list[dict]:
+    out: list[dict] = []
+    for idx, row in enumerate(schedule_rows, start=1):
+        rd = _sqlite_row_as_dict(row)
+        ct_val = _daily_schedule_float(rd.get("work_user_cycle_time"))
+        pcs_per_hour = 3600.0 / ct_val if ct_val and ct_val > 0 else None
+        qty_val = (
+            rd.get("actual_quantity")
+            if rd.get("actual_quantity") is not None
+            else row["quantity"]
+        )
+        qty_num = _daily_schedule_float(qty_val) or 0.0
+        planned_minutes = (ct_val * qty_num / 60.0) if ct_val and qty_num else None
+
+        try:
+            start_dt = datetime.strptime(str(row["start_time"]), "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            start_dt = None
+        is_shift2 = bool(start_dt and start_dt.hour >= 15)
+
+        shift1_hours = [""] * 9
+        shift2_hours = [""] * 9
+        shift1_plan = ""
+        shift2_plan = ""
+        if is_shift2:
+            shift2_plan = _daily_schedule_fmt(qty_num) if qty_num else ""
+            shift2_hours[0] = _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
+        else:
+            shift1_plan = _daily_schedule_fmt(qty_num) if qty_num else ""
+            shift1_hours[0] = _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
+
+        actual_qty = rd.get("actual_quantity")
+        actual_start = str(rd.get("actual_start") or "").strip()
+        actual_shift2 = False
+        if actual_start:
+            try:
+                actual_shift2 = (
+                    datetime.strptime(actual_start, "%Y-%m-%d %H:%M:%S").hour >= 15
+                )
+            except ValueError:
+                actual_shift2 = is_shift2
+        actual_display = _daily_schedule_fmt(actual_qty) if actual_qty is not None else ""
+
+        out.append(
+            {
+                "no": str(row["operation_code"] or "").strip() or str(idx),
+                "part_name": (
+                    str(row["order_item_code"] or "").strip()
+                    or str(row["operation_out_item"] or "").strip()
+                    or str(row["item_name"] or "").strip()
+                    or str(row["item_id"] or "").strip()
+                ),
+                "cycle_time": _daily_schedule_fmt(rd.get("work_user_cycle_time")),
+                "pcs_per_hour": _daily_schedule_fmt(pcs_per_hour),
+                "line": str(rd.get("work_group") or "").strip(),
+                "process": _daily_schedule_process_name(row),
+                "packing_type": "",
+                "packing_box": "",
+                "packing_qty": "",
+                "machine": (
+                    str(rd.get("actual_resource") or "").strip()
+                    or str(row["machine_name"] or "").strip()
+                    or str(row["machine_id"] or "").strip()
+                ),
+                "material": str(rd.get("work_user_material") or "").strip(),
+                "fix_machine": "",
+                "plan_machine_2": "",
+                "material_plate": "",
+                "plate_need": "",
+                "category": "",
+                "rate": "",
+                "qty_plan": _daily_schedule_fmt(qty_num) if qty_num else "",
+                "operator": "",
+                "mc_secondary": "",
+                "shift1_plan": shift1_plan,
+                "shift1_hours": shift1_hours,
+                "shift1_act": actual_display if actual_display and not actual_shift2 else "",
+                "shift2_plan": shift2_plan,
+                "shift2_hours": shift2_hours,
+                "shift2_act": actual_display if actual_display and actual_shift2 else "",
+                "ng": "",
+                "kip": "",
+                "claim_customer": "",
+                "remark": "",
+                "spot": "",
+            }
+        )
+    return out
+
+
+def _daily_schedule_context(date_str: str, process_filter: str) -> dict:
+    start_date, end_date = _daily_schedule_date_range(date_str)
+    process_filter = (process_filter or "").strip()
+
+    conn = get_db()
+    try:
+        processes_raw = conn.execute(
+            """
+            SELECT DISTINCT
+              TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) AS process_name
+            FROM schedules
+            WHERE TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) <> ''
+              AND UPPER(TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, '')))) <> 'PURCHASE'
+            ORDER BY process_name
+            """
+        ).fetchall()
+        query = """
+            SELECT *
+            FROM schedules
+            WHERE start_time >= ?
+              AND start_time < ?
+              AND TRIM(COALESCE(NULLIF(item_id, ''), NULLIF(operation_out_item, ''), NULLIF(item_name, ''))) <> ''
+              AND UPPER(TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, '')))) <> 'PURCHASE'
+        """
+        params = [
+            start_date.strftime('%Y-%m-%d %H:%M:%S'),
+            end_date.strftime('%Y-%m-%d %H:%M:%S'),
+        ]
+        if process_filter:
+            query += """
+              AND TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) = ?
+            """
+            params.append(process_filter)
+        query += """
+            ORDER BY
+              TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))),
+              machine_name,
+              start_time,
+              id
+        """
+        schedule_rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    current_date = start_date
+    return {
+        "current_date": current_date,
+        "prev_date": (current_date - timedelta(days=1)).strftime('%Y-%m-%d'),
+        "next_date": (current_date + timedelta(days=1)).strftime('%Y-%m-%d'),
+        "selected_date": current_date.strftime('%Y-%m-%d'),
+        "selected_date_label": current_date.strftime('%d-%b-%y').upper(),
+        "processes": [
+            str(r['process_name'] or '').strip()
+            for r in processes_raw
+            if str(r['process_name'] or '').strip()
+        ],
+        "process_filter": process_filter,
+        "daily_rows": _build_daily_schedule_rows(list(schedule_rows)),
+    }
+
+
 @app.context_processor
 def inject_global_stats():
-    # Makes schedule count available to all templates (e.g., for showing Clear button).
+    # Makes data counts available to all templates (e.g., for showing Clear button).
     try:
         conn = get_db()
-        total = conn.execute('SELECT COUNT(*) as c FROM schedules').fetchone()['c']
+        schedule_total = conn.execute('SELECT COUNT(*) as c FROM schedules').fetchone()['c']
+        try:
+            psi_input_total = conn.execute('SELECT COUNT(*) as c FROM psi_input_instructions').fetchone()['c']
+        except Exception:
+            psi_input_total = 0
+        try:
+            psi_output_total = conn.execute('SELECT COUNT(*) as c FROM psi_output_instructions').fetchone()['c']
+        except Exception:
+            psi_output_total = 0
+        total_data_count = int(schedule_total or 0) + int(psi_input_total or 0) + int(psi_output_total or 0)
         conn.close()
     except Exception:
-        total = 0
+        schedule_total = 0
+        psi_input_total = 0
+        psi_output_total = 0
+        total_data_count = 0
     options = [
         {"id": k, "label": str(v.get("label") or k)}
         for k, v in BRIDGE_CUSTOMERS.items()
@@ -241,12 +520,64 @@ def inject_global_stats():
     ]
     selected_customer_id = str(session.get("viewer_customer_id") or "").strip().lower()
     connected = bool(selected_customer_id and any(o["id"] == selected_customer_id for o in options))
+    # 顧客固有挙動を Strategy 経由でテンプレートへ公開する。
+    # 個別ハンドラで `is_phc_viewer` のような顧客 ID 直書きフラグを増やさず、
+    # `customer_view.flags.*` で参照することでテンプレート側を顧客非依存に保つ。
+    customer_view = get_customer(selected_customer_id).to_view()
     return {
-        'schedule_total': total,
+        'schedule_total': schedule_total,
+        'psi_input_total': psi_input_total,
+        'psi_output_total': psi_output_total,
+        'total_data_count': total_data_count,
         'viewer_customer_profiles': options,
         'viewer_selected_customer_id': selected_customer_id,
         'viewer_customer_connected': connected,
+        'customer_view': customer_view,
     }
+
+
+_COMPANY_REQUIRED_ENDPOINTS = {
+    'gantt',
+    'daily_schedule_view',
+    'monthly_result_view',
+    'psi_view',
+    'upload',
+    'upload_input_instruction_psi',
+    'upload_output_instruction_psi',
+    'export_schedules_csv',
+    'export_daily_schedule',
+}
+
+
+def _viewer_company_selected() -> bool:
+    selected_customer_id = str(session.get("viewer_customer_id") or "").strip().lower()
+    return bool(
+        selected_customer_id
+        and selected_customer_id in BRIDGE_CUSTOMERS
+        and isinstance(BRIDGE_CUSTOMERS.get(selected_customer_id), dict)
+    )
+
+
+def _current_co_cd() -> str:
+    """schedules / psi_input_instructions / psi_output_instructions 用の co_cd。
+
+    Viewer 側で選択中の Company (``session['viewer_customer_id']``) を
+    そのまま小文字で返す。Company 未選択時は空文字。
+    今後 Bridge 側 (``bridge_resource_cycle_times``) と突き合わせる際は
+    この関数の戻り値を SELECT/WHERE のキーとして使う想定。
+    """
+
+    return str(session.get("viewer_customer_id") or "").strip().lower()
+
+
+@app.before_request
+def require_viewer_company_for_menu_pages():
+    if request.endpoint not in _COMPANY_REQUIRED_ENDPOINTS:
+        return None
+    if _viewer_company_selected():
+        return None
+    flash('Please select a Company first.', 'error')
+    return redirect(url_for('company_required'))
 
 
 def init_db():
@@ -277,12 +608,16 @@ def init_db():
             actual_resource TEXT,
             work_group TEXT,
             work_user_res_order TEXT,
+            work_user_cycle_time TEXT,
+            work_user_proc_name TEXT,
+            work_user_material TEXT,
             delivery_date TEXT,
             delivery_order_no TEXT,
             delivery_item TEXT,
             delivery_item_name TEXT,
             min_skill TEXT,
             qc_skill TEXT,
+            co_cd TEXT NOT NULL DEFAULT '',
             uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -332,6 +667,12 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN work_group TEXT")
         if "work_user_res_order" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN work_user_res_order TEXT")
+        if "work_user_cycle_time" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN work_user_cycle_time TEXT")
+        if "work_user_proc_name" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN work_user_proc_name TEXT")
+        if "work_user_material" not in cols:
+            conn.execute("ALTER TABLE schedules ADD COLUMN work_user_material TEXT")
         if "delivery_date" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN delivery_date TEXT")
         if "delivery_order_no" not in cols:
@@ -344,6 +685,10 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN min_skill TEXT")
         if "qc_skill" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN qc_skill TEXT")
+        if "co_cd" not in cols:
+            conn.execute(
+                "ALTER TABLE schedules ADD COLUMN co_cd TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS psi_input_instructions (
@@ -359,7 +704,9 @@ def ensure_db_schema():
                 object_status_flag_ext TEXT,
                 flag_date TEXT,
                 operation_code TEXT,
+                customer TEXT,
                 source_filename TEXT,
+                co_cd TEXT NOT NULL DEFAULT '',
                 uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -389,7 +736,9 @@ def ensure_db_schema():
                 object_status_flag_ext TEXT,
                 flag_date TEXT,
                 operation_code TEXT,
+                customer TEXT,
                 source_filename TEXT,
+                co_cd TEXT NOT NULL DEFAULT '',
                 uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -404,6 +753,20 @@ def ensure_db_schema():
             )
             """
         )
+        psi_in_cols = {r["name"] for r in conn.execute("PRAGMA table_info(psi_input_instructions)").fetchall()}
+        if "customer" not in psi_in_cols:
+            conn.execute("ALTER TABLE psi_input_instructions ADD COLUMN customer TEXT")
+        if "co_cd" not in psi_in_cols:
+            conn.execute(
+                "ALTER TABLE psi_input_instructions ADD COLUMN co_cd TEXT NOT NULL DEFAULT ''"
+            )
+        psi_out_cols = {r["name"] for r in conn.execute("PRAGMA table_info(psi_output_instructions)").fetchall()}
+        if "customer" not in psi_out_cols:
+            conn.execute("ALTER TABLE psi_output_instructions ADD COLUMN customer TEXT")
+        if "co_cd" not in psi_out_cols:
+            conn.execute(
+                "ALTER TABLE psi_output_instructions ADD COLUMN co_cd TEXT NOT NULL DEFAULT ''"
+            )
         ensure_integrates_table(conn)
         conn.commit()
     finally:
@@ -454,11 +817,16 @@ def index():
     return redirect(url_for('gantt'))
 
 
+@app.route('/company-required')
+def company_required():
+    return render_template('viewer_company_required.html')
+
+
 @app.route('/viewer/connect', methods=['POST'])
 def viewer_connect():
     customer_id = (request.form.get('customer_id') or '').strip().lower()
     if customer_id and customer_id not in BRIDGE_CUSTOMERS:
-        flash('選択したCustomerが不正です。', 'error')
+        flash('The selected Customer is invalid.', 'error')
         return redirect(request.referrer or url_for('gantt'))
     if customer_id:
         session['viewer_customer_id'] = customer_id
@@ -511,8 +879,8 @@ def upload():
 
                 conn.execute('''
                     INSERT INTO schedules 
-                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, work_user_res_order, delivery_date, delivery_order_no, delivery_item, delivery_item_name, min_skill, qc_skill)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, work_user_res_order, work_user_cycle_time, work_user_proc_name, work_user_material, delivery_date, delivery_order_no, delivery_item, delivery_item_name, min_skill, qc_skill, co_cd)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     rec['order_id'],
                     rec['order_item_code'],
@@ -536,12 +904,16 @@ def upload():
                     rec.get('actual_resource'),
                     rec.get('work_group'),
                     rec.get('work_user_res_order'),
+                    rec.get('work_user_cycle_time'),
+                    rec.get('work_user_proc_name'),
+                    rec.get('work_user_material'),
                     rec.get('delivery_date'),
                     rec.get('delivery_order_no'),
                     rec.get('delivery_item'),
                     rec.get('delivery_item_name'),
                     rec.get('min_skill'),
                     rec.get('qc_skill'),
+                    _current_co_cd(),
                 ))
                 count += 1
 
@@ -622,8 +994,8 @@ def upload_input_instruction_psi():
                     INSERT INTO psi_input_instructions (
                         item_code, inst_time, quantity, u_quantity, qty_fixed_level,
                         qty_fixed_level_user_specified, pegging_method, object_id,
-                        object_status_flag_ext, flag_date, operation_code, source_filename
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        object_status_flag_ext, flag_date, operation_code, customer, source_filename, co_cd
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         rec['item_code'],
@@ -637,7 +1009,9 @@ def upload_input_instruction_psi():
                         rec['object_status_flag_ext'],
                         rec['flag_date'],
                         rec['operation_code'],
+                        rec.get('customer'),
                         filename,
+                        _current_co_cd(),
                     ),
                 )
                 count += 1
@@ -737,8 +1111,8 @@ def upload_output_instruction_psi():
                     INSERT INTO psi_output_instructions (
                         item_code, inst_time, quantity, u_quantity, qty_fixed_level,
                         qty_fixed_level_user_specified, pegging_method, object_id,
-                        object_status_flag_ext, flag_date, operation_code, source_filename
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        object_status_flag_ext, flag_date, operation_code, customer, source_filename, co_cd
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         rec['item_code'],
@@ -752,7 +1126,9 @@ def upload_output_instruction_psi():
                         rec['object_status_flag_ext'],
                         rec['flag_date'],
                         rec['operation_code'],
+                        rec.get('customer'),
                         filename,
+                        _current_co_cd(),
                     ),
                 )
                 count += 1
@@ -805,11 +1181,11 @@ def upload_output_instruction_psi():
 
 @app.route('/export/schedules.csv')
 def export_schedules_csv():
-    """Download result.csv: Work_Code, Actual_Start, Actual_End, Actual_Resource, actual_quantity."""
+    """Download result.csv (status='D' rows only): Work_Code, Actual_Start, Actual_End, Actual_Resource, status, actual_quantity."""
     ensure_db_schema()
     conn = get_db()
     rows = conn.execute(
-        'SELECT * FROM schedules ORDER BY machine_name, start_time, id'
+        "SELECT * FROM schedules WHERE TRIM(COALESCE(status, '')) = 'D' ORDER BY machine_name, start_time, id"
     ).fetchall()
     conn.close()
 
@@ -936,6 +1312,184 @@ def schedule():
     return render_template('schedule2.html', **ctx)
 
 
+@app.route('/daily-schedule')
+def daily_schedule_view():
+    ensure_db_schema()
+    if 'date' in request.args:
+        date_str = request.args.get('date') or datetime.now().strftime('%Y-%m-%d')
+    else:
+        date_str = get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    process_filter = (request.args.get('process', '') or '').strip()
+    return render_template(
+        'daily_schedule.html',
+        **_daily_schedule_context(date_str, process_filter),
+    )
+
+
+@app.route('/export_daily_schedule')
+def export_daily_schedule():
+    if Workbook is None:
+        flash('Excel export requires openpyxl to be installed (pip install openpyxl).', 'error')
+        return redirect(url_for('daily_schedule_view'))
+    ensure_db_schema()
+    date_str = request.args.get('date') or get_earliest_schedule_date() or datetime.now().strftime('%Y-%m-%d')
+    process_filter = (request.args.get('process', '') or '').strip()
+    ctx = _daily_schedule_context(date_str, process_filter)
+    rows = ctx["daily_rows"]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "SCHEDULE"
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A7"
+
+    thin = Side(style="thin", color="8CA0B3")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    title_font = Font(name="Meiryo", bold=True, size=14)
+    header_font = Font(name="Meiryo", bold=True, size=9)
+    body_font = Font(name="Meiryo", size=9)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    right = Alignment(horizontal="right", vertical="center")
+    green_fill = PatternFill("solid", fgColor="D9EAD3")
+    sub_fill = PatternFill("solid", fgColor="E2F0D9")
+    shift_fill = PatternFill("solid", fgColor="FFF2CC")
+    date_fill = PatternFill("solid", fgColor="FCE4D6")
+
+    ws.merge_cells("A1:AU1")
+    ws["A1"] = "SCHEDULE PROSES PRODUKSI"
+    ws["A1"].font = title_font
+    ws["A1"].alignment = left
+    ws.merge_cells("A3:AS3")
+    ws["A3"] = f"LINE PRESSING{' - ' + process_filter if process_filter else ''}"
+    ws["A3"].font = header_font
+    ws["A3"].alignment = left
+    ws.merge_cells("AT3:AU3")
+    ws["AT3"] = "REGULER"
+    ws["AT3"].font = header_font
+    ws["AT3"].alignment = center
+
+    merge_ranges = (
+        "A4:A6", "B4:B6", "C4:C6", "D4:D6", "E4:E6", "F4:F6",
+        "G4:I5", "J4:J6", "K4:K6", "L4:L6", "M4:M6", "N4:N6",
+        "O4:O6", "P4:P6", "Q4:Q6", "R4:R6", "S4:S6", "T4:T6",
+        "U4:AP4", "U5:AE5", "AF5:AP5", "AQ4:AQ6", "AR4:AR6",
+        "AS4:AS6", "AT4:AT6", "AU4:AU6",
+    )
+    for rng in merge_ranges:
+        ws.merge_cells(rng)
+
+    header_values = {
+        "A4": "NO",
+        "B4": "NAMA PART",
+        "C4": "CT (detik) BARU",
+        "D4": "PCS/JAM",
+        "E4": "LINE",
+        "F4": "PROSES",
+        "G4": "STANDAR PACKING",
+        "J4": "MC",
+        "K4": "MATERIAL",
+        "L4": "FIX MESIN",
+        "M4": "PLAN MESIN KE 2",
+        "N4": "MTL PLATE - IRIS /PCS",
+        "O4": "KEBUTUHAN/ PLATE",
+        "P4": "KATEGORI",
+        "Q4": "RATE",
+        "R4": "QTY PLAN",
+        "S4": "OPERATOR",
+        "T4": "MC",
+        "U4": ctx["selected_date_label"],
+        "AQ4": "NG",
+        "AR4": "KIP",
+        "AS4": "CLAIM CUSTOMER",
+        "AT4": "REMARK",
+        "AU4": "SPOT",
+        "U5": "SHIFT 1",
+        "AF5": "SHIFT 2",
+        "G6": "TYPE",
+        "H6": "BOX",
+        "I6": "QTY",
+        "U6": "PLAN",
+        "AE6": "ACT",
+        "AF6": "PLAN",
+        "AP6": "ACT",
+    }
+    for idx, value in enumerate(range(1, 10), start=22):
+        ws.cell(row=6, column=idx, value=value)
+    for idx, value in enumerate(range(1, 10), start=33):
+        ws.cell(row=6, column=idx, value=value)
+    for coord, value in header_values.items():
+        ws[coord] = value
+
+    for row_idx in range(4, 7):
+        for col_idx in range(1, 48):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.font = header_font
+            cell.border = border
+            cell.alignment = center
+            if 21 <= col_idx <= 42 and row_idx == 4:
+                cell.fill = date_fill
+            elif 21 <= col_idx <= 42 and row_idx == 5:
+                cell.fill = shift_fill
+            elif row_idx == 6:
+                cell.fill = sub_fill
+            else:
+                cell.fill = green_fill
+
+    def row_values(r: dict) -> list:
+        return [
+            r["no"], r["part_name"], r["cycle_time"], r["pcs_per_hour"], r["line"],
+            r["process"], r["packing_type"], r["packing_box"], r["packing_qty"],
+            r["machine"], r["material"], r["fix_machine"], r["plan_machine_2"],
+            r["material_plate"], r["plate_need"], r["category"], r["rate"],
+            r["qty_plan"], r["operator"], r["mc_secondary"], r["shift1_plan"],
+            *r["shift1_hours"], r["shift1_act"], r["shift2_plan"],
+            *r["shift2_hours"], r["shift2_act"], r["ng"], r["kip"],
+            r["claim_customer"], r["remark"], r["spot"],
+        ]
+
+    for r in rows:
+        ws.append(row_values(r))
+
+    for row in ws.iter_rows(min_row=7, max_row=ws.max_row, min_col=1, max_col=47):
+        for cell in row:
+            cell.font = body_font
+            cell.border = border
+            if cell.column in {1, 2, 5, 6, 7, 8, 10, 11, 16, 17, 19, 20, 44, 46}:
+                cell.alignment = left
+            else:
+                cell.alignment = right
+
+    widths = {
+        "A": 9, "B": 24, "C": 12, "D": 10, "E": 11, "F": 18,
+        "G": 10, "H": 10, "I": 10, "J": 14, "K": 34, "L": 12,
+        "M": 16, "N": 18, "O": 18, "P": 12, "Q": 10, "R": 12,
+        "S": 12, "T": 10, "AS": 18, "AT": 18,
+    }
+    for col in range(1, 48):
+        letter = get_column_letter(col)
+        ws.column_dimensions[letter].width = widths.get(letter, 9)
+    for row_idx in range(1, ws.max_row + 1):
+        ws.row_dimensions[row_idx].height = 22
+    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[4].height = 36
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_process = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_"
+        for ch in (process_filter or "all")
+    ).strip("_") or "all"
+    filename = f"daily_schedule_{ctx['selected_date'].replace('-', '')}_{safe_process}.xlsx"
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
 @app.route('/gantt')
 def gantt():
     # Default to monthly when no view is specified (for header Gantt Chart link)
@@ -967,23 +1521,11 @@ def gantt():
         end_date = current_date + timedelta(days=1)
 
     conn = get_db()
-    machines_raw = conn.execute(
-        '''
-        SELECT m AS machine_name FROM (
-            SELECT DISTINCT TRIM(machine_name) AS m FROM schedules
-            WHERE machine_name IS NOT NULL
-              AND TRIM(machine_name) <> ''
-              AND TRIM(machine_name) <> 'DefaultInventoryResource'
-            UNION
-            SELECT DISTINCT TRIM(actual_resource) AS m FROM schedules
-            WHERE actual_resource IS NOT NULL
-              AND TRIM(actual_resource) <> ''
-              AND TRIM(actual_resource) <> 'DefaultInventoryResource'
-        )
-        ORDER BY m
-        '''
-    ).fetchall()
-    machines = [{"machine_name": r["machine_name"]} for r in machines_raw]
+    records = _gantt_schedule_rows_in_window(conn, start_date, end_date, machine_filter)
+    tasks = _tasks_from_gantt_schedule_rows(records)
+
+    machines_raw = conn.execute(_GANTT_MACHINES_RAW_SQL).fetchall()
+    machines = _gantt_machines_sorted_for_dropdown(list(machines_raw), tasks)
 
     # Distinct order item codes (WorkUser_OrderItem) for dropdown
     order_items = conn.execute(
@@ -994,30 +1536,7 @@ def gantt():
         ORDER BY order_item_code
         '''
     ).fetchall()
-
-    range_end = end_date.strftime('%Y-%m-%d %H:%M:%S')
-    range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
-    query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
-    params = [range_end, range_start, range_end, range_start]
-    query += " AND TRIM(COALESCE(item_id, '')) <> ''"
-
-    if machine_filter:
-        query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
-        params.extend([machine_filter, machine_filter])
-    # item_filter is used only for link highlighting on frontend; keep data set complete
-
-    query += ' ORDER BY machine_name, start_time'
-    records = conn.execute(query, params).fetchall()
     conn.close()
-
-    tasks = []
-    for r in records:
-        t = _sched_row_to_gantt_task(r)
-        if t:
-            tasks.append(t)
-
-    # WorkUser_ResOrder → Resource 名の順（dropdown / 表示と一致）
-    machines = _gantt_machines_sorted_for_dropdown(list(machines_raw), tasks)
 
     if view in ('weekly', '2week', '3week'):
         span_days = {'weekly': 7, '2week': 14, '3week': 21}[view]
@@ -1066,7 +1585,7 @@ def asprova_viewer_check():
         ok=True,
         app_py=str(Path(__file__).resolve()),
         platform_root=str(PLATFORM_ROOT),
-        gantt_page_revision='5',
+        gantt_page_revision='8',
         gantt_response_headers=dict(GANTT_PAGE_HEADERS),
     )
 
@@ -1100,23 +1619,9 @@ def api_gantt_data():
         end_date = current_date + timedelta(days=1)
 
     conn = get_db()
-    range_end = end_date.strftime('%Y-%m-%d %H:%M:%S')
-    range_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
-    query = f'SELECT * FROM schedules WHERE {_gantt_range_sql_clause()}'
-    params = [range_end, range_start, range_end, range_start]
-    query += " AND TRIM(COALESCE(item_id, '')) <> ''"
-    if machine_filter:
-        query += ' AND (TRIM(machine_name) = ? OR TRIM(actual_resource) = ?)'
-        params.extend([machine_filter, machine_filter])
-    query += ' ORDER BY machine_name, start_time'
-    records = conn.execute(query, params).fetchall()
+    records = _gantt_schedule_rows_in_window(conn, start_date, end_date, machine_filter)
+    tasks = _tasks_from_gantt_schedule_rows(records)
     conn.close()
-
-    tasks = []
-    for r in records:
-        t = _sched_row_to_gantt_task(r)
-        if t:
-            tasks.append(t)
     return jsonify(tasks)
 
 
@@ -1768,28 +2273,70 @@ def psi_view():
     beg_bal_by_item = _build_psi_begin_balances(start_date)
     day_labels = [_format_md_weekday_en(d) for d in day_list]
 
-    # Build PSI rows for template
+    customer = get_customer(session.get('viewer_customer_id'))
+    split_by_customer = customer.psi_split_by_customer()
+    supply_split, demand_split = ({}, {})
+    if split_by_customer:
+        supply_split, demand_split = customer.build_psi_split_aggs(
+            start_date, end_date, get_db
+        )
+
+    row_defs = customer.psi_row_definitions()
+
     psi_items = []
     for item_key in ordered_items:
         rows_for_item = []
         beg_bal = float(beg_bal_by_item.get(item_key, 0.0))
         stock_prev = beg_bal
-        for row_type in ('Supply', 'Demand', 'Stock'):
+        for row_def in row_defs:
             cells = []
             for d in day_list:
                 day_date = d.date()
-                if row_type == 'Supply':
-                    parts = []
-                    for (it, day, m), qty in agg.items():
-                        if it == item_key and day == day_date and qty:
-                            parts.append(f'{m}: {qty:g}')
-                    cell_val = '\n'.join(parts) if parts else ''
-                elif row_type == 'Demand':
-                    parts = []
-                    for (it, day, m), qty in demand_agg.items():
-                        if it == item_key and day == day_date and qty and float(qty) > 0:
-                            parts.append(f'{m}: {qty:g}')
-                    cell_val = '\n'.join(parts) if parts else ''
+                if row_def.row_type == 'Supply':
+                    if split_by_customer:
+                        total_qty = 0.0
+                        for key, qty in supply_split.items():
+                            it, day, bucket, _m = key
+                            matches = (
+                                it == item_key
+                                and day == day_date
+                                and bucket == row_def.customer_bucket
+                            )
+                            if matches and qty:
+                                total_qty += float(qty)
+                        cell_val = f'{total_qty:g}' if total_qty else ''
+                    else:
+                        parts = []
+                        for key, qty in agg.items():
+                            it, day, m = key
+                            if it == item_key and day == day_date and qty:
+                                parts.append(f'{m}: {qty:g}')
+                        cell_val = '\n'.join(parts) if parts else ''
+                elif row_def.row_type == 'Demand':
+                    if split_by_customer:
+                        total_qty = 0.0
+                        for key, qty in demand_split.items():
+                            it, day, bucket, _m = key
+                            matches = (
+                                it == item_key
+                                and day == day_date
+                                and bucket == row_def.customer_bucket
+                            )
+                            if matches and qty and float(qty) > 0:
+                                total_qty += float(qty)
+                        cell_val = f'{total_qty:g}' if total_qty else ''
+                    else:
+                        parts = []
+                        for key, qty in demand_agg.items():
+                            it, day, m = key
+                            if (
+                                it == item_key
+                                and day == day_date
+                                and qty
+                                and float(qty) > 0
+                            ):
+                                parts.append(f'{m}: {qty:g}')
+                        cell_val = '\n'.join(parts) if parts else ''
                 else:  # Stock
                     s = supply_qty.get((item_key, day_date), 0.0)
                     d_qty = demand_qty.get((item_key, day_date), 0.0)
@@ -1797,7 +2344,15 @@ def psi_view():
                     stock_prev = stock
                     cell_val = f'{stock:g}'
                 cells.append(cell_val)
-            rows_for_item.append({'type': row_type, 'beg_bal': f'{beg_bal:g}' if row_type == 'Stock' else '', 'cells': cells})
+            rows_for_item.append(
+                {
+                    'type_main': row_def.type_main,
+                    'type_sub': row_def.type_sub,
+                    'type_rowspan': row_def.type_rowspan,
+                    'beg_bal': f'{beg_bal:g}' if row_def.row_type == 'Stock' else '',
+                    'cells': cells,
+                }
+            )
         psi_items.append({'item': item_key, 'rows': rows_for_item})
 
     return render_template(
@@ -2096,7 +2651,7 @@ def export_gantt_resource_detail():
     center = Alignment(horizontal='center', vertical='center')
     header_fill = PatternFill('solid', fgColor='76E597')
 
-    ws.append(['start (M/D)', 'item_id', 'quantity', 'status', 'planned quantity'])
+    ws.append(['Start (M/D)', 'Item id', 'Actual qty', 'Status', 'Planned qty'])
     for col_idx in range(1, 6):
         c = ws.cell(row=1, column=col_idx)
         c.font = header_font
@@ -2166,7 +2721,7 @@ def export_monthly_result_resource_detail():
     center = Alignment(horizontal='center', vertical='center')
     header_fill = PatternFill('solid', fgColor='76E597')
 
-    ws.append(['start (M/D)', 'item_id', 'quantity', 'status', 'planned quantity'])
+    ws.append(['Start (M/D)', 'Item id', 'Qty', 'Status', 'Planned qty'])
     for col_idx in range(1, 6):
         c = ws.cell(row=1, column=col_idx)
         c.font = header_font
@@ -2237,18 +2792,14 @@ def monthly_result_view():
     detail_rows = _build_monthly_result_resource_detail_rows(start_date, end_date, resource_filter)
     conn = get_db()
     try:
-        resources_raw = conn.execute(
-            '''
-            SELECT DISTINCT TRIM(COALESCE(NULLIF(actual_resource, ''), NULLIF(machine_name, ''), 'Unknown')) AS resource_name
-            FROM schedules
-            WHERE TRIM(COALESCE(item_id, '')) <> ''
-              AND TRIM(COALESCE(machine_id, '')) NOT IN ('DefaultInventoryResource', 'Purchase')
-            ORDER BY resource_name
-            '''
-        ).fetchall()
+        machine_rows = _machines_for_gantt_dropdown(conn, start_date, end_date, '')
+        resources = [
+            str(r['machine_name'] or '').strip()
+            for r in machine_rows
+            if str(r.get('machine_name') or '').strip()
+        ]
     finally:
         conn.close()
-    resources = [str(r['resource_name'] or '').strip() for r in resources_raw if str(r['resource_name'] or '').strip()]
 
     return render_template(
         'monthly_result.html',
@@ -2299,6 +2850,9 @@ def _build_psi_data_for_month(start_date, end_date):
         '''
         SELECT
             operation_code,
+            next_operation_code,
+            item_id,
+            operation_out_item,
             COALESCE(NULLIF(TRIM(machine_name), ''), NULLIF(TRIM(actual_resource), ''), 'Unknown') AS machine_name
         FROM schedules
         WHERE start_time >= ? AND start_time < ?
@@ -2328,22 +2882,42 @@ def _build_psi_data_for_month(start_date, end_date):
                 continue
         return None
 
+    def _op_parts(raw_op) -> tuple[str, Optional[int], str]:
+        op = str(raw_op or '').strip()
+        if not op:
+            return '', None, ''
+        if ':' not in op:
+            return op, None, op
+        lhs, rhs = op.split(':', 1)
+        link_key = lhs.strip()
+        rhs = rhs.strip()
+        num_buf = ''
+        found_digit = False
+        for ch in rhs:
+            if ch.isdigit():
+                num_buf += ch
+                found_digit = True
+            elif found_digit:
+                break
+        seq = int(num_buf) if found_digit else None
+        return link_key, seq, op
+
     op_to_machine_counts = defaultdict(lambda: defaultdict(int))
     for sr in sched_rows:
-        op_code = str(sr['operation_code'] or '').strip()
+        op_code, _, _ = _op_parts(sr['operation_code'])
         machine_name = str(sr['machine_name'] or '').strip() or 'Unknown'
         if not op_code:
             continue
         op_to_machine_counts[op_code][machine_name] += 1
 
     def _machine_dim(op_raw) -> str:
-        op_code = str(op_raw or '').strip()
+        op_code, _, op_raw_txt = _op_parts(op_raw)
         if not op_code:
             return 'Unknown'
         counts = op_to_machine_counts.get(op_code)
         if counts:
             return max(counts.items(), key=lambda kv: kv[1])[0]
-        return op_code
+        return op_raw_txt or op_code
 
     items: set[str] = set()
     agg = defaultdict(float)
@@ -2386,52 +2960,168 @@ def _build_psi_data_for_month(start_date, end_date):
         if qty:
             demand_qty[(item_key, day)] += qty
 
-    def split_item_code(code: str):
-        if not code:
-            return None, None
-        if '-' in code:
-            base, suffix = code.rsplit('-', 1)
-            try:
-                num = int(suffix)
-                return base, num
-            except ValueError:
-                return code, None
-        return code, None
+    def _operation_sort_key(raw_op) -> tuple[int, str, int, str]:
+        link_key, seq, full = _op_parts(raw_op)
+        if link_key and seq is not None:
+            return (0, link_key, seq, full)
+        if link_key:
+            return (1, link_key, 10**12, full)
+        return (2, '', 10**12, full)
 
-    items_sorted = sorted(items)
-    families = {}
-    for it in items_sorted:
-        base, num = split_item_code(it)
-        if base is None:
+    item_min_op_key: dict[str, tuple[int, str, int, str]] = {}
+    for r in out_rows:
+        item_key = str(r['item_code'] or '').strip()
+        if not item_key:
             continue
-        families.setdefault(base, []).append((it, num))
+        key = _operation_sort_key(r['operation_code'])
+        prev = item_min_op_key.get(item_key)
+        if prev is None or key < prev:
+            item_min_op_key[item_key] = key
+    for r in in_rows:
+        item_key = str(r['item_code'] or '').strip()
+        if not item_key:
+            continue
+        key = _operation_sort_key(r['operation_code'])
+        prev = item_min_op_key.get(item_key)
+        if prev is None or key < prev:
+            item_min_op_key[item_key] = key
+    # Operation table fallback/prioritization:
+    # derive per-item flow order from operation_code / next_operation_code as well.
+    for sr in sched_rows:
+        item_key = str(sr['item_id'] or '').strip()
+        if not item_key:
+            continue
+        for op_field in ('operation_code', 'next_operation_code'):
+            key = _operation_sort_key(sr[op_field])
+            prev = item_min_op_key.get(item_key)
+            if prev is None or key < prev:
+                item_min_op_key[item_key] = key
 
     next_item_for: dict[str, str] = {}
-    ordered_items = []
-    for base in sorted(families.keys()):
-        variants = families[base]
-        numbered = [v for v in variants if v[1] is not None]
-        base_codes = [v for v in variants if v[1] is None]
-        numbered.sort(key=lambda x: x[1] if x[1] is not None else -1)
-        base_code = base if base in items else (base_codes[0][0] if base_codes else None)
-        family_order = [code for code, _ in numbered]
-        if base_code and base_code not in family_order:
-            family_order.append(base_code)
-        ordered_items.extend(family_order)
-        for code, num in numbered:
-            if num is None:
+    item_priority = lambda it: (item_min_op_key.get(it, (9, '', 10**12, it)), it)
+
+    # Build item flow graph:
+    # 1) S(previous) -> P(next) derived from instruction tables by operation flow key/sequence.
+    # 2) Fallback/enrichment from Operation table (schedules): item_id -> operation_out_item.
+    adjacency: dict[str, set[str]] = {it: set() for it in items}
+    indegree: dict[str, int] = {it: 0 for it in items}
+
+    # 1) Instruction-derived flow (user rule): previous process S feeds next process P.
+    #    Group by operation flow key (left side of ':') and sequence (right numeric).
+    demand_items_by_flow_seq: dict[tuple[str, int], set[str]] = defaultdict(set)
+    supply_items_by_flow_seq: dict[tuple[str, int], set[str]] = defaultdict(set)
+    seqs_by_flow: dict[str, set[int]] = defaultdict(set)
+
+    for r in in_rows:
+        item_key = str(r['item_code'] or '').strip()
+        if not item_key or item_key not in items:
+            continue
+        flow_key, seq, _full = _op_parts(r['operation_code'])
+        if not flow_key or seq is None:
+            continue
+        demand_items_by_flow_seq[(flow_key, seq)].add(item_key)
+        seqs_by_flow[flow_key].add(seq)
+
+    for r in out_rows:
+        item_key = str(r['item_code'] or '').strip()
+        if not item_key or item_key not in items:
+            continue
+        flow_key, seq, _full = _op_parts(r['operation_code'])
+        if not flow_key or seq is None:
+            continue
+        supply_items_by_flow_seq[(flow_key, seq)].add(item_key)
+        seqs_by_flow[flow_key].add(seq)
+
+    for flow_key, seqs in seqs_by_flow.items():
+        ordered_seqs = sorted(seqs)
+        for seq in ordered_seqs:
+            src_items = demand_items_by_flow_seq.get((flow_key, seq))
+            if not src_items:
                 continue
-            if code in next_item_for:
+            # next process P: first later sequence that has supply items.
+            dst_items = None
+            for nxt in ordered_seqs:
+                if nxt <= seq:
+                    continue
+                cands = supply_items_by_flow_seq.get((flow_key, nxt))
+                if cands:
+                    dst_items = cands
+                    break
+            if not dst_items:
                 continue
-            candidate = f"{base}-{num + 10}"
-            if candidate in items:
-                next_item_for[code] = candidate
-            elif base_code and base_code in items:
-                next_item_for[code] = base_code
-    remaining = [it for it in items_sorted if it not in ordered_items]
-    ordered_items.extend(sorted(remaining))
+            for src in src_items:
+                for dst in dst_items:
+                    if src == dst or dst in adjacency[src]:
+                        continue
+                    adjacency[src].add(dst)
+                    indegree[dst] += 1
+
+    # 2) Operation-table flow
+    for sr in sched_rows:
+        in_item = str(sr['item_id'] or '').strip()
+        out_item = str(sr['operation_out_item'] or '').strip()
+        if not in_item or not out_item or in_item == out_item:
+            continue
+        if in_item not in items or out_item not in items:
+            continue
+        if out_item in adjacency[in_item]:
+            continue
+        adjacency[in_item].add(out_item)
+        indegree[out_item] += 1
+
+    ordered_items: list[str] = []
+    frontier = sorted([it for it in items if indegree[it] == 0], key=item_priority)
+    while frontier:
+        n = frontier.pop(0)
+        ordered_items.append(n)
+        for m in sorted(adjacency[n], key=item_priority):
+            indegree[m] -= 1
+            if indegree[m] == 0:
+                frontier.append(m)
+        frontier.sort(key=item_priority)
+
+    if len(ordered_items) < len(items):
+        # Cycles / disconnected leftovers: keep deterministic engineering order.
+        ordered_set = set(ordered_items)
+        remaining = [it for it in items if it not in ordered_set]
+        ordered_items.extend(sorted(remaining, key=item_priority))
+
+    # Temporary business rule (requested): show as WIP-A, FG-A, WIP-B, FG-B ...
+    # If names match WIP/FG paired pattern, prioritize this simple paired ordering.
+    pair_map: dict[str, dict[str, str]] = defaultdict(dict)
+    unmatched: list[str] = []
+    for it in items:
+        s = str(it).strip()
+        up = s.upper()
+        if up.startswith('WIP-'):
+            pair_map[s[4:]]['WIP'] = s
+        elif up.startswith('FG-'):
+            pair_map[s[3:]]['FG'] = s
+        else:
+            unmatched.append(s)
+    if pair_map:
+        def _suffix_sort_key(sf: str):
+            try:
+                return (0, int(sf), sf)
+            except ValueError:
+                return (1, sf)
+        paired_order: list[str] = []
+        for suffix in sorted(pair_map.keys(), key=_suffix_sort_key):
+            g = pair_map[suffix]
+            if 'WIP' in g:
+                paired_order.append(g['WIP'])
+            if 'FG' in g:
+                paired_order.append(g['FG'])
+        # Keep non WIP/FG items after paired rows in stable engineering order.
+        rest = [x for x in ordered_items if x not in set(paired_order)]
+        ordered_items = paired_order + rest + [x for x in sorted(unmatched) if x not in set(rest)]
 
     return day_list, ordered_items, next_item_for, supply_qty, agg, demand_qty, demand_agg
+
+
+# NOTE: PHC 用の Customer 軸 (Export/Internal) PSI 集計は
+# `core.customers.phc.PhcCustomer.build_psi_split_aggs` に移設した。
+# 顧客別ロジックは `core/customers/<id>.py` を参照。
 
 
 def _build_psi_begin_balances(month_start: datetime) -> dict[str, float]:
@@ -2616,9 +3306,9 @@ if __name__ == '__main__':
     _viewer_app_py = Path(__file__).resolve()
     print()
     print('=== ASPROVA Viewer (SQLite / Gantt) ===')
-    print(f'  使用中の app.py: {_viewer_app_py}')
-    print('  動作確認: http://127.0.0.1:5000/viewer-check （または /__asprova_viewer_check）')
-    print('  （別パスが出る場合は、今いるフォルダ違いの app.py を起動しています）')
+    print(f'  app.py in use: {_viewer_app_py}')
+    print('  Health check: http://127.0.0.1:5000/viewer-check (or /__asprova_viewer_check)')
+    print('  If a different path is shown, Viewer is running from another folder.')
     print('========================================')
     print()
     app.run(debug=True, host='0.0.0.0', port=5000)

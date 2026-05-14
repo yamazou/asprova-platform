@@ -260,6 +260,17 @@ def detect_columns(headers: list[str]) -> Dict[str, str]:
         "workuser_resorder",
         "workuser_res_order",
     )
+    mapping["work_user_cycle_time"] = find_exact("workuser_cycletime") or find_col(
+        "workuser_cycletime",
+        "workuser_cycle_time",
+    )
+    mapping["work_user_proc_name"] = find_exact("workuser_procname") or find_col(
+        "workuser_procname",
+        "workuser_proc_name",
+    )
+    mapping["work_user_material"] = find_exact("workuser_material") or find_col(
+        "workuser_material",
+    )
     mapping["delivery_date"] = find_exact("workuser_deliverydate") or find_col(
         "workuser_deliverydate",
         "workuser_delivery_date",
@@ -345,6 +356,9 @@ def parse_schedule_upload_row(
 
     wg = _get_val(mapping, row, "work_group")
     wro = _get_val(mapping, row, "work_user_res_order")
+    wct = _get_val(mapping, row, "work_user_cycle_time")
+    wpn = _get_val(mapping, row, "work_user_proc_name")
+    wm = _get_val(mapping, row, "work_user_material")
     dd = _get_val(mapping, row, "delivery_date")
     don = _get_val(mapping, row, "delivery_order_no")
     di = _get_val(mapping, row, "delivery_item")
@@ -379,6 +393,9 @@ def parse_schedule_upload_row(
         "actual_resource": actual_resource or None,
         "work_group": wg or None,
         "work_user_res_order": wro or None,
+        "work_user_cycle_time": wct or None,
+        "work_user_proc_name": wpn or None,
+        "work_user_material": wm or None,
         "delivery_date": dd or None,
         "delivery_order_no": don or None,
         "delivery_item": di or None,
@@ -407,12 +424,13 @@ def _format_csv_cell(v: Any) -> str:
     return str(v).strip()
 
 
-# Result export: Work_Code + actual columns only.
+# Result export: Work_Code, actuals, status, actual_quantity.
 RESULT_CSV_HEADERS: Tuple[str, ...] = (
     "Work_Code",
     "Actual_Start",
     "Actual_End",
     "Actual_Resource",
+    "status",
     "actual_quantity",
 )
 
@@ -446,6 +464,7 @@ def schedule_row_to_result_csv_cells(row: Any) -> List[str]:
         _format_result_export_datetime(_row_get(row, "actual_start")),
         _format_result_export_datetime(_row_get(row, "actual_end")),
         _format_csv_cell(_row_get(row, "actual_resource")),
+        _format_csv_cell(_row_get(row, "status")),
         _format_csv_cell(_row_get(row, "actual_quantity")),
     ]
 

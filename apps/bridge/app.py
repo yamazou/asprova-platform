@@ -20,39 +20,38 @@ from flask import (
     session,
     url_for,
 )
-import oracledb
 from werkzeug.utils import secure_filename
 
-# 古いバージョンの Oracle DB に接続するため、
-# Python-oracledb を thick モード（Oracle Client 経由）で使用する。
-try:
-    # Windows では、Oracle Client / Instant Client が PATH やレジストリに
-    # 登録されていれば、引数なしで自動検出されます。
-    oracledb.init_oracle_client()
-except oracledb.ProgrammingError:
-    # すでに初期化済みの場合などは無視
-    pass
+
+# oracledb は mcframe (Oracle) 顧客向け納品でしか必要ない。
+# 納品時に oracledb / Oracle Client を含めない構成 (例: PEB のみ Excel 納品)
+# でもアプリ起動できるよう、関数内で必要時に lazy import する。
+
+
+def _ensure_oracledb_initialized() -> None:
+    """mcframe 接続の前に Oracle Client を初期化する (idempotent)。"""
+
+    try:
+        import oracledb  # noqa: PLC0415
+
+        try:
+            oracledb.init_oracle_client()
+        except oracledb.ProgrammingError:
+            # すでに初期化済みの場合などは無視
+            pass
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "oracledb is required for mcframe (Oracle) connections: "
+            "run pip install oracledb."
+        ) from exc
 
 PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 COMMON_DIR = PLATFORM_ROOT / "common"
 
 sys.path.insert(0, str(PLATFORM_ROOT))
-from core.csv_loader import rows_to_csv
-from core.sap_integrated_master import (
-    append_supplier_use_lines_after_inputs,
-    fetch_integrated_master_rows_from_sqlserver,
-)
-from core.sap_inventory_table import fetch_inventory_rows_from_sqlserver
-from core.sap_item_table import fetch_item_table_rows_from_sqlserver
-from core.sap_order_table import fetch_order_rows_from_sqlserver
-from core.peb_excel_exports import (
-    load_peb_inventory_rows_from_xlsx_bytes,
-    load_peb_inventory_wip_rows_from_xlsx_bytes,
-    load_peb_monthly_result_rows_from_xlsx_bytes,
-    load_peb_order_rows_from_xlsx_bytes,
-    load_peb_prd_plan_rows_from_xlsx_bytes,
-)
-from core.sqlserver_conn import connect_sqlserver
+from core.parsers.csv_loader import rows_to_csv
+from core.erp._base import BridgeErpService, NotSupportedError
+from core.customers import get_customer
 from config.bridge_customers import BRIDGE_CUSTOMERS
 from config.settings import DB_PATH
 
@@ -61,6 +60,20 @@ app.jinja_loader = ChoiceLoader(
     [FileSystemLoader(str(COMMON_DIR / "templates")), app.jinja_loader]
 )
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "asprova-bridge-dev-secret")
+
+
+@app.context_processor
+def _inject_customer_view():
+    """テンプレート全体で使えるよう ``customer_view`` を注入する。
+
+    顧客 ID 直書きの ``{% if selected_customer_id == 'xxx' %}`` を
+    ``{% for btn in customer_view.bridge_buttons %}`` のような
+    顧客非依存の表現に置き換えるため。
+    """
+
+    return {
+        "customer_view": get_customer(session.get("customer_id")).to_view(),
+    }
 # ブラウザを閉じても接続フォーム用セッションを残す（デフォルトのセッション Cookie は終了時に消える）
 _bridge_session_days = int(os.environ.get("BRIDGE_SESSION_DAYS", "30"))
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(1, min(_bridge_session_days, 365)))
@@ -79,40 +92,8 @@ CONFIRM_LOGO_PATH = os.environ.get(
 HTML_INDEX = None
 
 
-MASTER_SQL = """
-SELECT
-    b.P_ITM_CD AS P_ITM_CD,
-    10 AS PROCESS_NO,
-    '10' AS PROCESS_CD,
-    'I' AS INST_TYP,
-    'In' || ROW_NUMBER() OVER (
-      PARTITION BY b.P_ITM_CD
-      ORDER BY b.C_ITM_CD
-    ) AS INST_CD,
-    b.C_ITM_CD AS ITM_RESOURCE,
-    TO_CHAR(b.C_REQ_QTY) AS PRODUCTION
-FROM
-    {schema}.SM_BOM_ALL b
-WHERE
-    b.BOM_PTN = 1
-
-UNION ALL
-
-SELECT
-    hl.ITM_CD AS P_ITM_CD,
-    10 AS PROCESS_NO,
-    '10' AS PROCESS_CD,
-    'U' AS INST_TYP,
-    'M' AS INST_CD,
-    hl.LINE_CD AS ITM_RESOURCE,
-    TO_CHAR(hl.CYCLE_TIME) || 'mp' AS PRODUCTION
-FROM
-    {schema}.SM_HINLINE_ALL hl
-WHERE
-    hl.CO_CD = '{co_cd}'
-"""
-
-
+# CSV 出力ヘッダ (ERP 横断で同一)。
+# SQL 文や Excel 解析ロジックは ``core/erp/<system>/service.py`` 側に集約。
 INTEGRATED_HEADERS = [
     "P_ITM_CD",
     "PROCESS_NO",
@@ -123,57 +104,12 @@ INTEGRATED_HEADERS = [
     "PRODUCTION",
 ]
 
-
-ITEM_TABLE_SQL = """
-SELECT
-    c.ITM_CD,
-    c.ITM_NM,
-    CASE TRIM(TO_CHAR(c.ITM_TYP))
-        WHEN '1' THEN 'P'
-        WHEN '2' THEN 'I'
-        WHEN '5' THEN 'M'
-        WHEN '6' THEN 'H'
-        WHEN '7' THEN 'U'
-        ELSE TRIM(TO_CHAR(c.ITM_TYP))
-    END AS ITM_TYP,
-    MAX(m.MAX_LOT_UNIT_QTY) AS MAX_LOT_UNIT_QTY
-FROM
-    {schema}.CM_HINMO_ALL c
-    JOIN {schema}.SM_HINMOS_ALL m
-      ON m.ITM_CD = c.ITM_CD
-WHERE
-    c.CO_CD = '{co_cd}'
-    AND m.CO_CD = '{co_cd}'
-    -- AND m.BOM_PTN = 1
-GROUP BY
-    c.ITM_CD,
-    c.ITM_NM,
-    c.ITM_TYP
-ORDER BY
-    c.ITM_CD
-"""
-
 ITEM_TABLE_HEADERS = [
     "ITM_CD",
     "ITM_NM",
     "ITM_TYP",
     "MAX_LOT_UNIT_QTY",
 ]
-
-ORDER_TABLE_SQL = """
-SELECT
-    REQ_NO,
-    ITM_CD,
-    DLV_DT,
-    REQ_QTY,
-    CAST(NULL AS VARCHAR2(64)) AS CUST_CD
-FROM
-    {schema}.ST_SHOYO_ALL
-ORDER BY
-    REQ_NO,
-    ITM_CD,
-    DLV_DT
-"""
 
 ORDER_TABLE_HEADERS = [
     "REQ_NO",
@@ -183,38 +119,12 @@ ORDER_TABLE_HEADERS = [
     "CUST_CD",
 ]
 
-RESOURCE_TABLE_SQL = """
-SELECT
-    LINE_CD,
-    LINE_NM,
-    CASE
-        WHEN LINE_CD LIKE 'M%' THEN 'INJECTION'
-        ELSE ''
-    END AS RESOURCE_GRP
-FROM
-    {schema}.SM_LINE_ALL
-ORDER BY
-    LINE_CD
-"""
-
 RESOURCE_TABLE_HEADERS = [
     "LINE_CD",
     "LINE_NM",
     "RESOURCE_GRP",
     "Sort_Order",
 ]
-
-INVENTORY_TABLE_SQL = """
-SELECT
-    'INV' || LPAD(ROW_NUMBER() OVER (ORDER BY ITM_CD), 5, '0') AS INV_CD,
-    ITM_CD,
-    STK_QTY,
-    CAST(NULL AS VARCHAR2(10)) AS INV_DT
-FROM
-    {schema}.ST_GNZAIKO_ALL
-ORDER BY
-    ITM_CD
-"""
 
 INVENTORY_TABLE_HEADERS = [
     "INV_CD",
@@ -376,6 +286,49 @@ def _delete_resource_cycle_row_by_id(row_id: int) -> int:
         return int(cur.rowcount or 0)
 
 
+def _insert_resource_cycle_row(
+    *,
+    line_code: str,
+    line_name: str,
+    cycle_time: str,
+    sort_order: int,
+) -> int:
+    """Cycle Time Master に手動で 1 行追加する。
+
+    現在の scope key (mcframe は co_cd、excel は customer_id) 単位で重複チェックし、
+    同じ ``line_code`` が既に存在する場合は ``RuntimeError`` を送出する。
+    source_filename には ``(manual)`` を埋めて、CSV 取り込み行と区別できるようにする。
+    """
+
+    co_cd = _resource_cycle_scope_key()
+    line_code = (line_code or "").strip()
+    if not line_code:
+        raise RuntimeError("Line Code is required.")
+    line_name = (line_name or "").strip()
+    cycle_time = (cycle_time or "").strip()
+    with _open_resource_cycle_db() as conn:
+        _ensure_resource_cycle_table(conn)
+        cur = conn.execute(
+            f"SELECT id FROM {RESOURCE_CYCLE_TABLE} "
+            f"WHERE co_cd = ? AND line_code = ?",
+            (co_cd, line_code),
+        )
+        if cur.fetchone():
+            raise RuntimeError(
+                f"The same Line Code already exists: {line_code}"
+            )
+        cur = conn.execute(
+            f"""
+            INSERT INTO {RESOURCE_CYCLE_TABLE}
+            (co_cd, line_code, line_name, cycle_time, source_filename, sort_order, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (co_cd, line_code, line_name, cycle_time, "(manual)", sort_order),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+
+
 def _load_cycle_time_map_from_sqlite() -> dict[str, str]:
     co_cd = _resource_cycle_scope_key()
     try:
@@ -448,7 +401,7 @@ def _read_resource_cycle_rows_from_bytes(raw: bytes) -> list[dict]:
             rows = [dict(r) for r in reader]
             line_key = _pick_first_matching(headers, RESOURCE_LINE_CODE_CANDIDATES)
             if not line_key:
-                raise RuntimeError("CSV に LINE_CD（または Line Code）列がありません。")
+                raise RuntimeError("The CSV does not contain a LINE_CD or Line Code column.")
             name_key = _pick_first_matching(headers, RESOURCE_LINE_NAME_CANDIDATES) or "LINE_NM"
             cycle_key = _pick_first_matching(headers, RESOURCE_CYCLE_TIME_CANDIDATES)
             if not cycle_key:
@@ -466,40 +419,83 @@ def _read_resource_cycle_rows_from_bytes(raw: bytes) -> list[dict]:
         except UnicodeDecodeError as exc:
             errors.append(exc)
             continue
-    raise RuntimeError("CSV の文字コードを判別できませんでした。") from (
+    raise RuntimeError("Could not determine the CSV character encoding.") from (
         errors[-1] if errors else None
     )
-
-
-def get_connection():
-    if get_erp_system() == "sap_b1":
-        raise RuntimeError("SAP B1 は SQL Server 接続です。get_sqlserver_connection() を使用してください。")
-    user = session.get("oracle_user")
-    password = session.get("oracle_password")
-    if not (user and password):
-        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
-    dsn = session.get("oracle_dsn") or "orcl"
-    return oracledb.connect(user=user, password=password, dsn=dsn)
-
-
-def get_sqlserver_connection():
-    """SAP B1: DNS=サーバー名、SCHEMA=データベース名、ID/PASSWORD=SQL 認証。"""
-    if get_erp_system() != "sap_b1":
-        raise RuntimeError("内部エラー: SQL Server 接続は SAP Business One モードのみです。")
-    user = session.get("oracle_user")
-    password = session.get("oracle_password")
-    server = (session.get("oracle_dsn") or "").strip()
-    database = (session.get("oracle_schema") or "").strip()
-    if not (user and password and server and database):
-        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
-    return connect_sqlserver(server, database, user, password, timeout=30)
 
 
 def get_schema() -> str:
     schema = session.get("oracle_schema")
     if not schema:
-        raise RuntimeError("未接続です。先に「Connect」からデータベースへ接続してください。")
+        raise RuntimeError("Not connected. Please connect to the database from Connect first.")
     return schema
+
+
+def _get_erp_service() -> BridgeErpService:
+    """セッション情報から ERP 別サービスを生成して返す (lazy import)。
+
+    ここでだけ ``core.erp.<system>.service`` を import することで、
+    顧客納品時に未使用の ERP サブパッケージを物理削除しても
+    アプリ起動時の ImportError を避けられる。
+    """
+
+    erp = get_erp_system()
+    if erp == "mcframe":
+        from core.erp.mcframe.service import McframeBridgeService  # noqa: PLC0415
+
+        return McframeBridgeService(
+            oracle_user=str(session.get("oracle_user") or ""),
+            oracle_password=str(session.get("oracle_password") or ""),
+            oracle_dsn=str(session.get("oracle_dsn") or ""),
+            oracle_schema=get_schema(),
+            mcframe_co_cd=get_mcframe_co_cd(),
+        )
+    if erp == "sap_b1":
+        from core.erp.sap_b1.service import SapB1BridgeService  # noqa: PLC0415
+
+        return SapB1BridgeService(
+            server=str(session.get("oracle_dsn") or "").strip(),
+            database=str(session.get("oracle_schema") or "").strip(),
+            user=str(session.get("oracle_user") or ""),
+            password=str(session.get("oracle_password") or ""),
+        )
+    if erp == "excel":
+        from core.erp.excel.service import ExcelBridgeService  # noqa: PLC0415
+
+        profile = _get_selected_customer_profile()
+        if not profile:
+            raise RuntimeError(
+                "Please select a Customer for Excel import."
+            )
+        return ExcelBridgeService(
+            customer=get_customer(session.get("customer_id")),
+            profile=profile,
+        )
+    raise RuntimeError(f"Unsupported ERP type: {erp}")
+
+
+def _verify_connection_alive() -> bool:
+    """セッション上の ``oracle_connected`` が現在も実接続可能かを軽量検証する。
+
+    フラグが立っていても DB が停止している場合は ``session["oracle_connected"]``
+    を ``False`` に書き戻し、ヘッダ表示を ``DISCONNECTED`` に切り替える。
+    Excel 顧客のように接続を伴わない ERP は常に True 扱い。
+    """
+
+    if not session.get("oracle_connected"):
+        return False
+    try:
+        service = _get_erp_service()
+    except Exception:
+        # 接続情報が壊れている / 不足している → 切断扱い
+        session["oracle_connected"] = False
+        return False
+    try:
+        service.ping()
+    except Exception:
+        session["oracle_connected"] = False
+        return False
+    return True
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,29}$")
@@ -548,152 +544,14 @@ def _customer_profile_options() -> list[dict[str, str]]:
     return options
 
 
-def _sap_b1_not_supported_flash() -> None:
-    flash(
-        "SAP Business One 接続時はこの出力は未対応です（mcframe / Oracle 用のテーブル参照です）。",
-        "error",
-    )
-
-
-def fetch_rows(sql: str):
-    if get_erp_system() in ("sap_b1", "excel"):
-        raise RuntimeError("この接続種別では Oracle SQL は使用しません。")
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            schema = get_schema()
-            cur.execute(
-                sql.format_map(
-                    {"schema": schema, "co_cd": get_mcframe_co_cd()}
-                )
-            )
-            for row in cur:
-                yield row
-
-
 def _get_selected_customer_profile() -> dict[str, str] | None:
+    """セッションで選択中の顧客プロファイル (BRIDGE_CUSTOMERS のエントリ) を返す。"""
+
     customer_id = str(session.get("customer_id") or "").strip()
     if not customer_id:
         return None
     profile = BRIDGE_CUSTOMERS.get(customer_id)
     return profile if isinstance(profile, dict) else None
-
-
-def _excel_file_key(kind: str) -> str:
-    return {
-        "integrated": "excel_integrated_file",
-        "item": "excel_item_file",
-        "order": "excel_order_file",
-        "prd_plan": "excel_prd_plan_file",
-        "resource": "excel_resource_file",
-        "inventory": "excel_inventory_file",
-        "inventory_wip": "excel_inventory_wip_file",
-    }[kind]
-
-
-def _default_excel_filename(kind: str) -> str:
-    return {
-        "integrated": "integrated_master.xlsx",
-        "item": "item_table.xlsx",
-        "order": "order_table.xlsx",
-        "prd_plan": "prd_plan_table.xlsx",
-        "resource": "resource_table.xlsx",
-        "inventory": "inventory_table.xlsx",
-        "inventory_wip": "inventory_wip_table.xlsx",
-    }[kind]
-
-
-def _resolve_excel_source_path(kind: str) -> Path:
-    profile = _get_selected_customer_profile()
-    if not profile:
-        raise RuntimeError("Excel 取り込みでは Customer を選択してください。")
-    base_dir = str(profile.get("excel_base_dir") or "").strip()
-    if not base_dir:
-        raise RuntimeError("選択中 Customer の excel_base_dir が未設定です。")
-    file_key = _excel_file_key(kind)
-    file_name = str(profile.get(file_key) or _default_excel_filename(kind)).strip()
-    if not file_name:
-        raise RuntimeError(f"選択中 Customer の {file_key} が未設定です。")
-    return Path(base_dir) / file_name
-
-
-def _iter_dict_rows_from_csv_bytes(raw: bytes) -> list[dict[str, str]]:
-    errors: list[Exception] = []
-    for enc in ("utf-8-sig", "cp932", "shift_jis"):
-        try:
-            text = raw.decode(enc)
-            reader = csv.DictReader(io.StringIO(text))
-            return [dict(r) for r in reader]
-        except UnicodeDecodeError as exc:
-            errors.append(exc)
-            continue
-    raise RuntimeError("CSV の文字コードを判別できませんでした。") from (
-        errors[-1] if errors else None
-    )
-
-
-def _iter_dict_rows_from_xlsx_bytes(raw: bytes) -> list[dict[str, str]]:
-    try:
-        from openpyxl import load_workbook
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
-        ) from exc
-    wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
-    try:
-        ws = wb.active
-        rows = ws.iter_rows(values_only=True)
-        header_row = next(rows, None)
-        if not header_row:
-            return []
-        headers = [str(h).strip() if h is not None else "" for h in header_row]
-        out: list[dict[str, str]] = []
-        for values in rows:
-            row: dict[str, str] = {}
-            for i, h in enumerate(headers):
-                if not h:
-                    continue
-                v = values[i] if i < len(values) else ""
-                row[h] = "" if v is None else str(v).strip()
-            out.append(row)
-        return out
-    finally:
-        wb.close()
-
-
-def _load_excel_export_rows(kind: str, headers: list[str], upload=None) -> list[tuple]:
-    file_name = ""
-    raw = b""
-    if upload and getattr(upload, "filename", ""):
-        file_name = str(upload.filename or "").strip()
-        raw = upload.read()
-        if not raw:
-            raise RuntimeError("選択したソースファイルが空です。")
-    else:
-        path = _resolve_excel_source_path(kind)
-        if not path.exists():
-            raise RuntimeError(f"Excel/CSV ファイルが見つかりません: {path}")
-        file_name = path.name
-        raw = path.read_bytes()
-    suffix = Path(file_name).suffix.lower()
-    if suffix == ".csv":
-        dict_rows = _iter_dict_rows_from_csv_bytes(raw)
-    elif suffix in (".xlsx", ".xlsm"):
-        customer_id = str(session.get("customer_id") or "").strip().lower()
-        if kind == "order" and customer_id == "peb":
-            return load_peb_order_rows_from_xlsx_bytes(raw)
-        if kind == "prd_plan" and customer_id == "peb":
-            return load_peb_prd_plan_rows_from_xlsx_bytes(raw)
-        if kind == "inventory" and customer_id == "peb":
-            return load_peb_inventory_rows_from_xlsx_bytes(raw)
-        if kind == "inventory_wip" and customer_id == "peb":
-            return load_peb_inventory_wip_rows_from_xlsx_bytes(raw)
-        dict_rows = _iter_dict_rows_from_xlsx_bytes(raw)
-    else:
-        raise RuntimeError(f"未対応の拡張子です: {suffix}（.csv/.xlsx/.xlsm のみ対応）")
-    out: list[tuple] = []
-    for row in dict_rows:
-        out.append(tuple(str(row.get(h) or "").strip() for h in headers))
-    return out
 
 
 @app.route("/", methods=["GET"])
@@ -705,10 +563,11 @@ def index():
         try:
             line_cycle_rows = _fetch_resource_cycle_rows()
         except Exception as exc:  # noqa: BLE001
-            flash(f"サイクルタイムSQLiteの読み込みに失敗しました: {exc}", "error")
+            flash(f"Failed to load cycle time SQLite data: {exc}", "error")
+    oracle_connected = _verify_connection_alive()
     return render_template(
         "bridge_index.html",
-        oracle_connected=bool(session.get("oracle_connected")),
+        oracle_connected=oracle_connected,
         erp_system=session.get("erp_system") or "mcframe",
         customer_profiles=_customer_profile_options(),
         selected_customer_id=str(session.get("customer_id") or ""),
@@ -722,18 +581,25 @@ def index():
 
 @app.route("/monthly-result", methods=["POST"])
 def monthly_result():
+    customer = get_customer(session.get("customer_id"))
+    if not customer.supports_monthly_result():
+        flash(
+            "Monthly Result is not supported for this customer.",
+            "error",
+        )
+        return redirect(url_for("index"))
     upload = request.files.get("monthly_result_excel")
     if not upload or not (upload.filename or "").strip():
-        flash("Monthly Result のソース Excel ファイルを選択してください。", "error")
+        flash("Please select a Monthly Result source Excel file.", "error")
         return redirect(url_for("index", show_monthly_result="1"))
     try:
         raw = upload.read()
         if not raw:
-            raise RuntimeError("アップロードされたファイルが空です。")
-        rows = load_peb_monthly_result_rows_from_xlsx_bytes(raw)
+            raise RuntimeError("The uploaded file is empty.")
+        rows = customer.parse_monthly_result(raw)
         source_name = secure_filename(upload.filename or "monthly_result.xlsx")
     except Exception as exc:  # noqa: BLE001
-        flash(f"Monthly Result の読み込みに失敗しました: {exc}", "error")
+        flash(f"Failed to load Monthly Result: {exc}", "error")
         return redirect(url_for("index", show_monthly_result="1"))
 
     show_line_cycle_master = (request.args.get("show_line_cycle") or "").strip() == "1"
@@ -742,10 +608,11 @@ def monthly_result():
         try:
             line_cycle_rows = _fetch_resource_cycle_rows()
         except Exception as exc:  # noqa: BLE001
-            flash(f"サイクルタイムSQLiteの読み込みに失敗しました: {exc}", "error")
+            flash(f"Failed to load cycle time SQLite data: {exc}", "error")
+    oracle_connected = _verify_connection_alive()
     return render_template(
         "bridge_index.html",
-        oracle_connected=bool(session.get("oracle_connected")),
+        oracle_connected=oracle_connected,
         erp_system=session.get("erp_system") or "mcframe",
         customer_profiles=_customer_profile_options(),
         selected_customer_id=str(session.get("customer_id") or ""),
@@ -794,10 +661,10 @@ def connect_oracle():
     if selected_profile:
         profile_erp = str(selected_profile.get("erp_system") or "").strip().lower()
         if profile_erp in ("mcframe", "sap_b1", "excel") and profile_erp != erp_system:
-            flash("選択したCustomerとSystemの組み合わせが一致しません。", "error")
+            flash("The selected Customer and System combination does not match.", "error")
             return redirect(url_for("index"))
     if erp_system != "excel" and (not oracle_id or not oracle_pwd or not oracle_schema or not oracle_dsn):
-        flash("ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name) を入力してください。", "error")
+        flash("Please enter ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name).", "error")
         return redirect(url_for("index"))
 
     co_cd_stored: str | None = None
@@ -809,8 +676,8 @@ def connect_oracle():
             co_raw = (os.environ.get("BRIDGE_MCFRAME_CO_CD") or "J0001").strip().upper()
         if not _MCFRAME_CO_CD_RE.match(co_raw):
             flash(
-                "Company CD は半角英数字のみ、1〜20文字で入力してください（未入力時は J0001 または"
-                " 環境変数 BRIDGE_MCFRAME_CO_CD）。",
+                "Company CD must be 1 to 20 half-width alphanumeric characters "
+                "(when blank, J0001 or BRIDGE_MCFRAME_CO_CD is used).",
                 "error",
             )
             return redirect(url_for("index"))
@@ -822,29 +689,44 @@ def connect_oracle():
     elif erp_system == "sap_b1":
         if not _SAP_B1_DB_RE.match(oracle_schema):
             flash(
-                "データベース名（SCHEMA 欄）は英数字・ドット・ハイフン・アンダースコアのみ、"
-                "1〜128文字で入力してください。",
+                "Database name (SCHEMA field) must be 1 to 128 characters and "
+                "can contain only alphanumeric characters, dots, hyphens, and underscores.",
                 "error",
             )
             return redirect(url_for("index"))
         schema_stored = oracle_schema
         try:
-            conn = connect_sqlserver(oracle_dsn, schema_stored, oracle_id, oracle_pwd, timeout=15)
+            # SAP B1 接続テスト。pyodbc / SQL Server ドライバへの依存は
+            # この import 1 箇所に閉じ込めることで、SAP B1 を含めない納品でも
+            # アプリ起動に失敗しないようにする。
+            from core.erp.sap_b1.connection import connect_sqlserver  # noqa: PLC0415
+
+            conn = connect_sqlserver(
+                oracle_dsn, schema_stored, oracle_id, oracle_pwd, timeout=15
+            )
             conn.close()
         except Exception as exc:  # noqa: BLE001
-            flash(f"接続に失敗しました: {exc}", "error")
+            flash(f"Connection failed: {exc}", "error")
             session["oracle_connected"] = False
             return redirect(url_for("index"))
     else:
         if not _SCHEMA_RE.match(oracle_schema):
-            flash("Schema は英数字とアンダースコアのみ（先頭は英字、最大30文字）で入力してください。", "error")
+            flash("Schema must start with a letter and contain only alphanumeric characters and underscores, up to 30 characters.", "error")
             return redirect(url_for("index"))
         schema_stored = oracle_schema.upper()
         try:
-            conn = oracledb.connect(user=oracle_id, password=oracle_pwd, dsn=oracle_dsn)
+            # mcframe (Oracle) 接続テスト。oracledb / Oracle Client への依存は
+            # ここでだけ発生するため、Excel/SAP B1 のみの納品でも import エラーで
+            # アプリが起動しなくなることはない。
+            _ensure_oracledb_initialized()
+            import oracledb  # noqa: PLC0415
+
+            conn = oracledb.connect(
+                user=oracle_id, password=oracle_pwd, dsn=oracle_dsn
+            )
             conn.close()
         except Exception as exc:  # noqa: BLE001
-            flash(f"接続に失敗しました: {exc}", "error")
+            flash(f"Connection failed: {exc}", "error")
             session["oracle_connected"] = False
             return redirect(url_for("index"))
 
@@ -865,201 +747,179 @@ def connect_oracle():
     return redirect(url_for("index"))
 
 
-@app.route("/download/integrated", methods=["POST"])
-def download_integrated():
-    try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("integrated", INTEGRATED_HEADERS, request.files.get("source_excel"))
-            csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
-        elif get_erp_system() == "sap_b1":
-            conn = get_sqlserver_connection()
-            try:
-                recs = fetch_integrated_master_rows_from_sqlserver(conn)
-                rec_dicts = [
-                    {
-                        "P_ITM_CD": r["P_ITM_CD"],
-                        "PROCESS_NO": r["PROCESS_NO"],
-                        "PROCESS_CD": r["PROCESS_CD"],
-                        "INST_TYP": r["INST_TYP"],
-                        "INST_CD": r["INST_CD"],
-                        "ITM_RESOURCE": r["ITM_RESOURCE"],
-                        "PRODUCTION": r["PRODUCTION"],
-                    }
-                    for r in recs
-                ]
-                rec_dicts = _apply_cycle_time_to_integrated_records(rec_dicts)
-                rows = [tuple(d[h] for h in INTEGRATED_HEADERS) for d in rec_dicts]
-                csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
-            finally:
-                conn.close()
-        else:
-            raw_rows = list(fetch_rows(MASTER_SQL))
-            rec_dicts = [dict(zip(INTEGRATED_HEADERS, row)) for row in raw_rows]
-            expanded = append_supplier_use_lines_after_inputs(rec_dicts)
-            expanded = _apply_cycle_time_to_integrated_records(expanded)
-            rows = [tuple(d[h] for h in INTEGRATED_HEADERS) for d in expanded]
-            csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
-    except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "integrated_master.csv"
+def _csv_response(csv_data: str, filename: str) -> Response:
     return Response(
         csv_data,
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+def _require_connection_or_redirect():
+    """DISCONNECTED 状態のままなら ``flash`` して index へ redirect する。
+
+    CSV ダウンロード系ハンドラの先頭で呼び、戻り値が ``None`` でなければ
+    そのまま return する想定。Excel のように接続不要な ERP は ``ping()`` が
+    no-op のため常にここを通り抜ける。Line Cycle Time Master は接続不要なので
+    このガードを呼ばない。
+
+    ``fetch()`` は 302 を自動追従するため、常に redirect すると HTML が
+    Blob 化されてしまう。``Sec-Fetch-Dest: empty``（典型的な fetch）のときは
+    本文付き 401 を返し、クライアントで判別できるようにする。
+    """
+
+    if _verify_connection_alive():
+        return None
+    msg = "ERP is not connected. Please connect from Connect first."
+    flash(msg, "error")
+    dest = (request.headers.get("Sec-Fetch-Dest") or "").lower()
+    mode = (request.headers.get("Sec-Fetch-Mode") or "").lower()
+    if dest == "empty" and mode in ("cors", "same-origin", "no-cors"):
+        return Response(
+            msg + "\n",
+            401,
+            mimetype="text/plain; charset=utf-8",
+        )
+    return redirect(url_for("index"))
+
+
+def _download_error_response(message: str) -> Response:
+    """POST /download/* が失敗したとき。fetch 由来なら redirect せず本文を返す。"""
+    flash(message, "error")
+    dest = (request.headers.get("Sec-Fetch-Dest") or "").lower()
+    mode = (request.headers.get("Sec-Fetch-Mode") or "").lower()
+    if dest == "empty" and mode in ("cors", "same-origin", "no-cors"):
+        return Response(
+            message + "\n",
+            400,
+            mimetype="text/plain; charset=utf-8",
+        )
+    return redirect(url_for("index"))
+
+
+@app.route("/download/integrated", methods=["POST"])
+def download_integrated():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
+    try:
+        service = _get_erp_service()
+        records = service.fetch_integrated_records(
+            upload=request.files.get("source_excel")
+        )
+        records = _apply_cycle_time_to_integrated_records(records)
+        rows = [tuple(d[h] for h in INTEGRATED_HEADERS) for d in records]
+        csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "integrated_master.csv")
 
 
 @app.route("/download/item-table", methods=["POST"])
 def download_item_table():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("item", ITEM_TABLE_HEADERS, request.files.get("source_excel"))
-            csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
-        elif get_erp_system() == "sap_b1":
-            conn = get_sqlserver_connection()
-            try:
-                rows = fetch_item_table_rows_from_sqlserver(conn)
-                csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
-            finally:
-                conn.close()
-        else:
-            rows = list(fetch_rows(ITEM_TABLE_SQL))
-            csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
+        service = _get_erp_service()
+        rows = service.fetch_item_rows(upload=request.files.get("source_excel"))
+        csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "item_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "item_table.csv")
 
 
 @app.route("/download/order-table", methods=["POST"])
 def download_order_table():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("order", ORDER_TABLE_HEADERS, request.files.get("source_excel"))
-            csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
-        elif get_erp_system() == "sap_b1":
-            conn = get_sqlserver_connection()
-            try:
-                rows = fetch_order_rows_from_sqlserver(conn)
-                csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
-            finally:
-                conn.close()
-        else:
-            rows = list(fetch_rows(ORDER_TABLE_SQL))
-            csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
+        service = _get_erp_service()
+        rows = service.fetch_order_rows(upload=request.files.get("source_excel"))
+        csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "order_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "order_table.csv")
 
 
 @app.route("/download/prd-plan-table", methods=["POST"])
 def download_prd_plan_table():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("prd_plan", ORDER_TABLE_HEADERS, request.files.get("source_excel"))
-            csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
-        else:
-            raise RuntimeError("Prd Plan は Excel 取り込みのみ対応です。")
+        service = _get_erp_service()
+        rows = service.fetch_prd_plan_rows(
+            upload=request.files.get("source_excel")
+        )
+        csv_data = rows_to_csv(rows, ORDER_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "prd_plan_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "prd_plan_table.csv")
 
 
 @app.route("/download/resource-table", methods=["POST"])
 def download_resource_table():
-    if get_erp_system() == "sap_b1":
-        _sap_b1_not_supported_flash()
-        return redirect(url_for("index"))
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("resource", RESOURCE_TABLE_HEADERS, request.files.get("source_excel"))
-        else:
-            base_rows = list(fetch_rows(RESOURCE_TABLE_SQL))
-            sort_map = _load_sort_order_map_from_sqlite()
-            rows = []
-            for line_cd, line_nm, resource_grp in base_rows:
-                sort_order = sort_map.get(str(line_cd or "").strip())
-                rows.append((line_cd, line_nm, resource_grp, "" if sort_order is None else sort_order))
+        service = _get_erp_service()
+        rows = service.fetch_resource_rows(
+            upload=request.files.get("source_excel"),
+            sort_order_map=_load_sort_order_map_from_sqlite(),
+        )
         csv_data = rows_to_csv(rows, RESOURCE_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "resource_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "resource_table.csv")
 
 
 @app.route("/download/inventory-table", methods=["POST"])
 def download_inventory_table():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() == "excel":
-            rows = _load_excel_export_rows("inventory", INVENTORY_TABLE_HEADERS, request.files.get("source_excel"))
-            csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
-        elif get_erp_system() == "sap_b1":
-            conn = get_sqlserver_connection()
-            try:
-                rows = fetch_inventory_rows_from_sqlserver(conn)
-                csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
-            finally:
-                conn.close()
-        else:
-            rows = list(fetch_rows(INVENTORY_TABLE_SQL))
-            csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
+        service = _get_erp_service()
+        rows = service.fetch_inventory_rows(
+            upload=request.files.get("source_excel")
+        )
+        csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "inventory_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "inventory_table.csv")
 
 
 @app.route("/download/inventory-wip-table", methods=["POST"])
 def download_inventory_wip_table():
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
     try:
-        if get_erp_system() != "excel":
-            raise RuntimeError("Inv. WIP は Excel 取り込みのみ対応です。")
-        rows = _load_excel_export_rows("inventory_wip", INVENTORY_TABLE_HEADERS, request.files.get("source_excel"))
+        service = _get_erp_service()
+        rows = service.fetch_inventory_wip_rows(
+            upload=request.files.get("source_excel")
+        )
         csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
+    except NotSupportedError as exc:
+        return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
-        flash(f"エラーが発生しました: {exc}", "error")
-        return redirect(url_for("index"))
-
-    filename = "inventory_wip_table.csv"
-    return Response(
-        csv_data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "inventory_wip_table.csv")
 
 
 @app.route("/resource-cycle-times", methods=["GET"])
@@ -1069,11 +929,11 @@ def resource_cycle_times():
     try:
         view_rows = _fetch_resource_cycle_rows()
     except Exception as exc:  # noqa: BLE001
-        flash(f"サイクルタイムSQLiteの読み込みに失敗しました: {exc}", "error")
+        flash(f"Failed to load cycle time SQLite data: {exc}", "error")
         view_rows = []
     return render_template(
         "bridge_cycle_time.html",
-        oracle_connected=bool(session.get("oracle_connected")),
+        oracle_connected=_verify_connection_alive(),
         erp_system=session.get("erp_system") or "mcframe",
         customer_profiles=_customer_profile_options(),
         selected_customer_id=str(session.get("customer_id") or ""),
@@ -1088,11 +948,11 @@ def save_resource_cycle_times():
     try:
         rows = _fetch_resource_cycle_rows()
     except Exception as exc:  # noqa: BLE001
-        flash(f"サイクルタイムSQLiteの読み込みに失敗しました: {exc}", "error")
+        flash(f"Failed to load cycle time SQLite data: {exc}", "error")
         return redirect(url_for("index", show_line_cycle="1"))
     try:
         if not rows:
-            flash("保存対象がありません。先に Resource CSV を取り込んでください。", "error")
+            flash("There is nothing to save. Please import a Resource CSV first.", "error")
             return redirect(url_for("index", show_line_cycle="1"))
         updates: dict[int, dict[str, str | int]] = {}
         for row in rows:
@@ -1105,12 +965,12 @@ def save_resource_cycle_times():
                 try:
                     sort_order = int(sort_raw)
                 except ValueError as exc:
-                    raise RuntimeError(f"Sort Order は整数で入力してください（ID={row_id}）。") from exc
+                    raise RuntimeError(f"Sort Order must be an integer (ID={row_id}).") from exc
             updates[row_id] = {"cycle_time": cycle_time, "sort_order": sort_order}
         _update_resource_cycle_rows_by_id(updates)
-        flash("サイクルタイムを保存しました。", "success")
+        flash("Cycle time data has been saved.", "success")
     except Exception as exc:  # noqa: BLE001
-        flash(f"サイクルタイムSQLiteの保存に失敗しました: {exc}", "error")
+        flash(f"Failed to save cycle time SQLite data: {exc}", "error")
     return redirect(url_for("index", show_line_cycle="1"))
 
 
@@ -1118,16 +978,43 @@ def save_resource_cycle_times():
 def delete_resource_cycle_time_row():
     row_id_raw = (request.form.get("row_id") or "").strip()
     if not row_id_raw.isdigit():
-        flash("削除対象の行番号が不正です。", "error")
+        flash("The row number to delete is invalid.", "error")
         return redirect(url_for("index", show_line_cycle="1"))
     row_id = int(row_id_raw)
     try:
         deleted = _delete_resource_cycle_row_by_id(row_id)
         if deleted <= 0:
-            raise RuntimeError("削除対象の行が見つかりません。")
-        flash("行を削除しました。", "success")
+            raise RuntimeError("The row to delete was not found.")
+        flash("The row has been deleted.", "success")
     except Exception as exc:  # noqa: BLE001
-        flash(f"行の削除に失敗しました: {exc}", "error")
+        flash(f"Failed to delete the row: {exc}", "error")
+    return redirect(url_for("index", show_line_cycle="1"))
+
+
+@app.route("/resource-cycle-times/add-row", methods=["POST"])
+def add_resource_cycle_time_row():
+    line_code = (request.form.get("new_line_code") or "").strip()
+    line_name = (request.form.get("new_line_name") or "").strip()
+    cycle_time = (request.form.get("new_cycle_time") or "").strip()
+    sort_raw = (request.form.get("new_sort_order") or "").strip()
+    if not line_code:
+        flash("Line Code is required.", "error")
+        return redirect(url_for("index", show_line_cycle="1"))
+    try:
+        sort_order = int(sort_raw) if sort_raw else 0
+    except ValueError:
+        flash("Sort Order must be an integer.", "error")
+        return redirect(url_for("index", show_line_cycle="1"))
+    try:
+        _insert_resource_cycle_row(
+            line_code=line_code,
+            line_name=line_name,
+            cycle_time=cycle_time,
+            sort_order=sort_order,
+        )
+        flash(f"Row added: {line_code}", "success")
+    except Exception as exc:  # noqa: BLE001
+        flash(f"Failed to add the row: {exc}", "error")
     return redirect(url_for("index", show_line_cycle="1"))
 
 
@@ -1135,12 +1022,12 @@ def delete_resource_cycle_time_row():
 def import_resource_cycle_times():
     upload = request.files.get("resource_csv")
     if not upload or not (upload.filename or "").strip():
-        flash("取り込む Resource CSV ファイルを選択してください。", "error")
+        flash("Please select the Resource CSV file to import.", "error")
         return redirect(url_for("index", show_line_cycle="1"))
     try:
         raw = upload.read()
         if not raw:
-            raise RuntimeError("アップロードされたファイルが空です。")
+            raise RuntimeError("The uploaded file is empty.")
         rows = _read_resource_cycle_rows_from_bytes(raw)
         file_name = secure_filename(upload.filename or "resource_table.csv")
         if not file_name:
@@ -1149,9 +1036,9 @@ def import_resource_cycle_times():
             file_name = f"{file_name}.csv"
         _replace_resource_cycle_rows(rows, file_name, _resource_cycle_scope_key())
         session[RESOURCE_CYCLE_SOURCE_SESSION_KEY] = file_name
-        flash(f"Resource CSV を取り込みました（SQLite保存）: {file_name}", "success")
+        flash(f"Resource CSV imported and saved to SQLite: {file_name}", "success")
     except Exception as exc:  # noqa: BLE001
-        flash(f"Resource CSV の取り込みに失敗しました: {exc}", "error")
+        flash(f"Failed to import Resource CSV: {exc}", "error")
     return redirect(url_for("index", show_line_cycle="1"))
 
 

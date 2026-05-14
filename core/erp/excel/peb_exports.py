@@ -30,12 +30,12 @@ def load_peb_order_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, str,
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
+            "openpyxl is required to read Excel (.xlsx) files."
         ) from exc
     wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
     try:
         if "Shipment Plan" not in wb.sheetnames:
-            raise RuntimeError("PEB の注文取込では 'Shipment Plan' シートが必要です。")
+            raise RuntimeError("PEB order import requires a 'Shipment Plan' sheet.")
         ws = wb["Shipment Plan"]
         rows = ws.iter_rows(values_only=True)
         header_row = next(rows, None)
@@ -59,8 +59,8 @@ def load_peb_order_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, str,
 
         if idx_item is None or idx_qty is None or idx_dlv is None:
             raise RuntimeError(
-                "Shipment Plan に必要な列がありません。"
-                " 必須: Item Code, Qty, Exfact Date。"
+                "Shipment Plan is missing required columns. "
+                "Required: Item Code, Qty, Exfact Date."
             )
 
         out: list[tuple[str, str, str, str, str]] = []
@@ -96,12 +96,12 @@ def load_peb_inventory_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, 
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
+            "openpyxl is required to read Excel (.xlsx) files."
         ) from exc
     wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
     try:
         if "FG stock" not in wb.sheetnames:
-            raise RuntimeError("PEB の在庫取込では 'FG stock' シートが必要です。")
+            raise RuntimeError("PEB inventory import requires an 'FG stock' sheet.")
         ws = wb["FG stock"]
         rows = ws.iter_rows(values_only=True)
         header_row = next(rows, None)
@@ -125,7 +125,7 @@ def load_peb_inventory_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, 
             qty_idx = 2 if len(header_row) > 2 else None
 
         if qty_idx is None:
-            raise RuntimeError("FG stock に在庫数量列が見つかりません。")
+            raise RuntimeError("No stock quantity column was found in FG stock.")
 
         inv_dt = _format_excel_date(header_row[qty_idx] if qty_idx < len(header_row) else "")
 
@@ -155,13 +155,13 @@ def load_peb_inventory_wip_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, s
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
+            "openpyxl is required to read Excel (.xlsx) files."
         ) from exc
     wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
     try:
         ws_name = next((n for n in wb.sheetnames if str(n).startswith("Stock_list_")), None)
         if not ws_name:
-            raise RuntimeError("PEB の WIP在庫取込では 'Stock_list_' で始まるシートが必要です。")
+            raise RuntimeError("PEB WIP inventory import requires a sheet starting with 'Stock_list_'.")
         ws = wb[ws_name]
         rows = ws.iter_rows(values_only=True)
         header_row = next(rows, None)
@@ -181,7 +181,7 @@ def load_peb_inventory_wip_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, s
         if qty_idx is None:
             qty_idx = 2 if len(header_row) > 2 else None
         if qty_idx is None:
-            raise RuntimeError("Stock_list_ シートに在庫数量列が見つかりません。")
+            raise RuntimeError("No stock quantity column was found in the Stock_list_ sheet.")
 
         inv_dt = ""
         m = re.match(r"^Stock_list_(\d{4})(\d{2})(\d{2})", ws_name)
@@ -211,13 +211,13 @@ def load_peb_prd_plan_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, s
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
+            "openpyxl is required to read Excel (.xlsx) files."
         ) from exc
     wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
     try:
         ws_name = next((n for n in wb.sheetnames if str(n).startswith("ProductionPlan")), None)
         if not ws_name:
-            raise RuntimeError("PEB の Prd Plan 取込では 'ProductionPlan' シートが必要です。")
+            raise RuntimeError("PEB Prd Plan import requires a 'ProductionPlan' sheet.")
         ws = wb[ws_name]
         rows = ws.iter_rows(values_only=True)
         _ = next(rows, None)  # title row
@@ -244,9 +244,9 @@ def load_peb_prd_plan_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, s
                 date_cols.append((i, dt))
 
         if fg_idx is None:
-            raise RuntimeError("ProductionPlan シートに FG Code 列が見つかりません。")
+            raise RuntimeError("No FG Code column was found in the ProductionPlan sheet.")
         if not date_cols:
-            raise RuntimeError("ProductionPlan シートに日付ヘッダー列が見つかりません。")
+            raise RuntimeError("No date header column was found in the ProductionPlan sheet.")
 
         out: list[tuple[str, str, str, str, str]] = []
         seq = 1
@@ -295,12 +295,12 @@ def load_peb_monthly_result_rows_from_xlsx_bytes(raw: bytes) -> list[dict[str, s
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Excel(.xlsx) の読み込みには openpyxl が必要です。"
+            "openpyxl is required to read Excel (.xlsx) files."
         ) from exc
     wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
     try:
         if "Monthly_ym" not in wb.sheetnames:
-            raise RuntimeError("PEB の Monthly Result 取込では 'Monthly_ym' シートが必要です。")
+            raise RuntimeError("PEB Monthly Result import requires a 'Monthly_ym' sheet.")
         ws = wb["Monthly_ym"]
         qty_by_line: dict[str, float] = {}
         wh_by_line: dict[str, float] = {}

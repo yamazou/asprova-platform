@@ -53,7 +53,7 @@
                   formmethod="post"
                   name="row_id"
                   value="{{ row.id }}"
-                  onclick="return confirm('この行を削除しますか？');"
+                  onclick="return confirm('Delete this row?');"
                 >
                   Delete
                 </button>
@@ -69,7 +69,7 @@
     </form>
     {% else %}
     <div style="padding:18px;" class="hint">
-      Line Cycle Time データがありません。
+      No Line Cycle Time data.
     </div>
     {% endif %}
   </div>
@@ -80,7 +80,7 @@
     <h2>Database Connect</h2>
     <form method="post" action="{{ url_for('connect_oracle') }}" autocomplete="off">
       <div class="field">
-        <label for="customer_id">Customer</label>
+        <label for="customer_id">Company</label>
         <select id="customer_id" name="customer_id">
           <option value="">Manual</option>
           {% for c in customer_profiles %}
@@ -107,7 +107,7 @@
       </div>
       <div class="field" id="oracle_schema_row" style="margin-top:10px;">
         <label for="oracle_schema">SCHEMA(DB Name)</label>
-        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: スキーマ / SAP B1: データベース名" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
+        <input id="oracle_schema" name="oracle_schema" type="text" placeholder="mcframe: schema / SAP B1: database name" value="{{ session.get('oracle_schema', '') }}" autocomplete="off" required />
       </div>
       <div class="field" id="mcframe_co_cd_row" style="margin-top:10px;">
         <label for="mcframe_co_cd">Company CD (CO_CD)</label>
@@ -118,14 +118,14 @@
           inputmode="latin"
           autocomplete="off"
           maxlength="20"
-          placeholder="例: J0001（未入力は J0001 または BRIDGE_MCFRAME_CO_CD）"
+          placeholder="Example: J0001 (blank uses J0001 or BRIDGE_MCFRAME_CO_CD)"
           value="{{ session.get('mcframe_co_cd', '') }}"
         />
-        <div class="hint" style="margin-top:4px;">mcframe / Oracle のみ。半角英数字 1〜20 文字。</div>
+        <div class="hint" style="margin-top:4px;">mcframe / Oracle only. Use 1 to 20 half-width alphanumeric characters.</div>
       </div>
       <div class="field" id="oracle_dsn_row" style="margin-top:10px;">
         <label for="oracle_dsn">DNS(Server Name)</label>
-        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: サーバー (例 HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
+        <input id="oracle_dsn" name="oracle_dsn" type="text" placeholder="mcframe: TNS / SAP B1: server (e.g. HOST\SQLEXPRESS)" value="{{ session.get('oracle_dsn', 'orcl') }}" required />
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" onclick="closeConnect()">Cancel</button>

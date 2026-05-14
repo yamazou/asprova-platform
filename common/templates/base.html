@@ -47,8 +47,8 @@
         <img src="{{ url_for('static', filename='asprova-logo.png') }}" alt="Asprova Schedule Viewer">
       </a>
       <nav class="nav">
-        <button type="button" class="nav-btn" onclick="openConnect()">Connect</button>
-        {% set viewer_nav_active = request.endpoint in ('gantt', 'psi_view', 'monthly_result_view') %}
+        <button type="button" class="nav-btn" onclick="openConnect()">Company</button>
+        {% set viewer_nav_active = request.endpoint == 'gantt' or request.endpoint == 'monthly_result_view' or (customer_view.flags.viewer_show_daily_schedule and request.endpoint == 'daily_schedule_view') or (customer_view.flags.viewer_show_psi_viewer and request.endpoint == 'psi_view') %}
         <details class="nav-dropdown">
           <summary class="nav-dropdown__summary{% if viewer_nav_active %} nav-dropdown__summary--active{% endif %}" aria-haspopup="true">Viewer</summary>
           <div class="nav-dropdown__panel" role="menu" aria-label="Viewer">
@@ -59,8 +59,13 @@
             {% else %}
             <a href="{{ url_for('gantt') }}" class="nav-dropdown__link{% if request.endpoint == 'gantt' %} active{% endif %}" role="menuitem">Gantt Chart</a>
             {% endif %}
+            {% if customer_view.flags.viewer_show_daily_schedule %}
+            <a href="{{ url_for('daily_schedule_view', date=current_date.strftime('%Y-%m-%d')) if current_date is defined else url_for('daily_schedule_view') }}" class="nav-dropdown__link{% if request.endpoint == 'daily_schedule_view' %} active{% endif %}" role="menuitem">Daily Schedule</a>
+            {% endif %}
             <a href="{{ url_for('monthly_result_view', date=current_date.strftime('%Y-%m-%d')) if current_date is defined else url_for('monthly_result_view') }}" class="nav-dropdown__link{% if request.endpoint == 'monthly_result_view' %} active{% endif %}" role="menuitem">Monthly Result</a>
+            {% if customer_view.flags.viewer_show_psi_viewer %}
             <a href="{{ url_for('psi_view', date=current_date.strftime('%Y-%m-%d')) if current_date is defined else url_for('psi_view') }}" class="nav-dropdown__link{% if request.endpoint == 'psi_view' %} active{% endif %}" role="menuitem">PSI Viewer</a>
+            {% endif %}
           </div>
         </details>
 
@@ -87,7 +92,7 @@
         </details>
       </nav>
 
-      {% if schedule_total is defined and schedule_total > 0 %}
+      {% if total_data_count is defined and total_data_count > 0 %}
         <form method="POST" action="/clear" onsubmit="return confirm('Clear all schedule data?')" style="margin:0;">
           <button type="submit" class="btn btn-danger btn-sm">🗑 Clear all data</button>
         </form>
@@ -99,9 +104,9 @@
           Status:
           <span>
             {% if viewer_customer_connected %}
-              CONNECTED with {{ viewer_selected_customer_id|upper }}
+              {{ viewer_selected_customer_id|upper }} selected
             {% else %}
-              DISCONNECTED
+              No company selected
             {% endif %}
           </span>
         </span>
@@ -135,10 +140,9 @@
 {% if oracle_connected is not defined %}
 <div id="viewerConnectBackdrop" class="modal-backdrop" aria-hidden="true">
   <div class="modal">
-    <h2>Viewer Connect</h2>
+    <h2>Select Company</h2>
     <form method="post" action="{{ url_for('viewer_connect') }}">
       <div class="field">
-        <label for="viewer_customer_id">Customer</label>
         <select id="viewer_customer_id" name="customer_id">
           <option value="">Manual</option>
           {% for c in viewer_customer_profiles %}
@@ -199,7 +203,7 @@
     if (!exportUrl || exportUrl === '#') return;
 
     if (!window.showDirectoryPicker) {
-      if (!confirm('お使いのブラウザはフォルダ指定保存に未対応です。通常のダウンロードで続行しますか？')) return;
+      if (!confirm('Your browser does not support saving to a selected folder. Continue with the standard download?')) return;
       window.location.href = exportUrl;
       return;
     }
@@ -210,7 +214,7 @@
     } catch (err) {
       if (err && err.name === 'AbortError') return;
       console.error(err);
-      alert('フォルダの選択に失敗しました。');
+      alert('Folder selection failed.');
       return;
     }
 
@@ -221,12 +225,12 @@
     } catch (e) {
       if (e.name !== 'NotFoundError') {
         console.error(e);
-        alert('フォルダ内のファイル確認に失敗しました。');
+        alert('Failed to check files in the selected folder.');
         return;
       }
     }
 
-    if (exists && !confirm('同名のファイルがあります。上書きしますか？')) return;
+    if (exists && !confirm('A file with the same name already exists. Overwrite it?')) return;
 
     let blob;
     try {
@@ -235,7 +239,7 @@
       blob = await res.blob();
     } catch (err) {
       console.error(err);
-      alert('エクスポートデータの取得に失敗しました。');
+      alert('Failed to fetch export data.');
       return;
     }
 
@@ -246,7 +250,7 @@
       await writable.close();
     } catch (err) {
       console.error(err);
-      alert('ファイルの保存に失敗しました。');
+      alert('Failed to save the file.');
     }
   });
 

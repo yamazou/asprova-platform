@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from typing import Any, List, Tuple
 
-from core.sap_integrated_master import (
-    _bracket_ident,
-    _pick_column,
-    _sqlserver_table_columns,
+from .schema import (
+    bracket_ident as _bracket_ident,
+    pick_column as _pick_column,
+    sqlserver_table_columns as _sqlserver_table_columns,
 )
 
 _ITEM_CD_CANDIDATES: Tuple[str, ...] = (
@@ -39,13 +39,13 @@ def fetch_item_table_rows_from_sqlserver(pyodbc_conn) -> List[Tuple[Any, Any, An
     """Return (ITM_CD, ITM_NM, ITM_TYP, MAX_LOT_UNIT_QTY) rows; ITM_TYP/MAX_LOT are always None."""
     cols = _sqlserver_table_columns(pyodbc_conn, "OITM_TMP")
     if not cols:
-        raise RuntimeError("dbo.OITM_TMP が見つからないか、列情報を取得できません。")
+        raise RuntimeError("dbo.OITM_TMP was not found, or column information could not be retrieved.")
 
     itm_cd = _pick_column(cols, _ITEM_CD_CANDIDATES)
     if not itm_cd:
         raise RuntimeError(
-            "OITM_TMP に品目コード列が見つかりません。"
-            f" 実際の列: {', '.join(cols)}。"
+            "No item code column was found in OITM_TMP. "
+            f"Actual columns: {', '.join(cols)}."
         )
 
     itm_nm = _pick_column(cols, _ITEM_NM_CANDIDATES)

@@ -225,7 +225,7 @@
     </div>
     <form method="GET" class="mr-filter-form">
       <input type="hidden" name="date" value="{{ current_date.strftime('%Y-%m-%d') }}">
-      <select name="machine" id="mr-machine-select" onchange="this.form.submit()" aria-label="Resource filter">
+      <select name="machine" id="mr-machine-select" aria-label="Resource filter">
         <option value="">All resources</option>
         {% for m in resources %}
         <option value="{{ m }}" {% if machine_filter == m %}selected{% endif %}>{{ m }}</option>
@@ -308,7 +308,7 @@
     </div>
     {% else %}
     <div style="padding:18px;" class="hint">
-      指定した月のデータがありません。
+      No data is available for the selected month.
     </div>
     {% endif %}
   </div>
@@ -323,15 +323,15 @@
       class="btn btn-sm btn-primary"
     >Export Excel</a>
   </div>
-  <div class="mr-detail-body">
+  <div class="mr-detail-body" id="mr-detail-scroll">
     <table class="mr-detail-table">
       <thead>
         <tr>
-          <th>start (M/D)</th>
-          <th>item_id</th>
-          <th>quantity</th>
-          <th>status</th>
-          <th>planned quantity</th>
+          <th>Start (M/D)</th>
+          <th>Item id</th>
+          <th>Qty</th>
+          <th>Status</th>
+          <th>Planned qty</th>
         </tr>
       </thead>
       <tbody>
@@ -368,6 +368,174 @@
   var VIEW_ZOOM_MIN = 0.5;
   var VIEW_ZOOM_MAX = 5;
   var VIEW = {{ view|tojson }};
+
+  var MR_SCROLL_KEY_PREFIX = 'asprovaMrScrollV1:';
+  var MR_DETAIL_SCROLL_KEY_PREFIX = 'asprovaMrDetailScrollV1:';
+
+  function mrScrollStorageKey() {
+    var inp = document.querySelector('.mr-filter-form input[name="date"]');
+    var d = inp && inp.value ? inp.value : '';
+    return MR_SCROLL_KEY_PREFIX + d;
+  }
+  function mrDetailScrollStorageKey() {
+    var inp = document.querySelector('.mr-filter-form input[name="date"]');
+    var d = inp && inp.value ? inp.value : '';
+    return MR_DETAIL_SCROLL_KEY_PREFIX + d;
+  }
+  function saveMrScrollToStorage() {
+    var el = document.getElementById('mr-scroll-root');
+    if (!el) return;
+    var maxL = el.scrollWidth - el.clientWidth;
+    var maxT = el.scrollHeight - el.clientHeight;
+    var ratioX = maxL > 0 ? el.scrollLeft / maxL : 0;
+    var ratioY = maxT > 0 ? el.scrollTop / maxT : 0;
+    try {
+      sessionStorage.setItem(
+        mrScrollStorageKey(),
+        JSON.stringify({
+          left: el.scrollLeft,
+          top: el.scrollTop,
+          ratioX: ratioX,
+          ratioY: ratioY,
+        })
+      );
+    } catch (e) { /* ignore */ }
+  }
+  function applyMrScrollState(st) {
+    var el = document.getElementById('mr-scroll-root');
+    if (!el || !st || typeof st !== 'object') return;
+    var maxL = Math.max(0, el.scrollWidth - el.clientWidth);
+    var maxT = Math.max(0, el.scrollHeight - el.clientHeight);
+    var lx = Number(st.left);
+    var ly = Number(st.top);
+    var rx = Number(st.ratioX);
+    var ry = Number(st.ratioY);
+    if (maxL > 0) {
+      if (isFinite(rx) && rx >= 0 && rx <= 1) el.scrollLeft = Math.min(maxL, Math.max(0, rx * maxL));
+      else if (isFinite(lx)) el.scrollLeft = Math.min(maxL, Math.max(0, lx));
+    }
+    if (maxT > 0) {
+      if (isFinite(ry) && ry >= 0 && ry <= 1) el.scrollTop = Math.min(maxT, Math.max(0, ry * maxT));
+      else if (isFinite(ly)) el.scrollTop = Math.min(maxT, Math.max(0, ly));
+    }
+  }
+  function restoreMrScrollFromStorage() {
+    var el = document.getElementById('mr-scroll-root');
+    if (!el) return;
+    var st = null;
+    try {
+      var raw = sessionStorage.getItem(mrScrollStorageKey());
+      if (raw) st = JSON.parse(raw);
+    } catch (e) { return; }
+    if (!st || typeof st !== 'object') return;
+    applyMrScrollState(st);
+  }
+  function scheduleMrScrollRestoreFromStorage() {
+    var st = null;
+    try {
+      var raw = sessionStorage.getItem(mrScrollStorageKey());
+      if (raw) st = JSON.parse(raw);
+    } catch (e) { return; }
+    if (!st || typeof st !== 'object') return;
+    function tick() {
+      applyMrScrollState(st);
+    }
+    requestAnimationFrame(function() {
+      tick();
+      requestAnimationFrame(function() {
+        tick();
+        setTimeout(tick, 0);
+        setTimeout(tick, 50);
+        setTimeout(tick, 150);
+      });
+    });
+  }
+  function saveMrDetailScrollToStorage() {
+    var el = document.getElementById('mr-detail-scroll');
+    if (!el) return;
+    var maxY = el.scrollHeight - el.clientHeight;
+    var ratioY = maxY > 0 ? el.scrollTop / maxY : 0;
+    try {
+      sessionStorage.setItem(
+        mrDetailScrollStorageKey(),
+        JSON.stringify({ top: el.scrollTop, ratioY: ratioY })
+      );
+    } catch (e) { /* ignore */ }
+  }
+  function applyMrDetailScrollState(st) {
+    var el = document.getElementById('mr-detail-scroll');
+    if (!el || !st || typeof st !== 'object') return;
+    var maxY = Math.max(0, el.scrollHeight - el.clientHeight);
+    var ry = Number(st.ratioY);
+    var ty = Number(st.top);
+    if (maxY > 0) {
+      if (isFinite(ry) && ry >= 0 && ry <= 1) el.scrollTop = Math.min(maxY, Math.max(0, ry * maxY));
+      else if (isFinite(ty)) el.scrollTop = Math.min(maxY, Math.max(0, ty));
+    }
+  }
+  function scheduleMrDetailScrollRestoreFromStorage() {
+    var st = null;
+    try {
+      var raw = sessionStorage.getItem(mrDetailScrollStorageKey());
+      if (raw) st = JSON.parse(raw);
+    } catch (e) { return; }
+    if (!st || typeof st !== 'object') return;
+    function tick() {
+      applyMrDetailScrollState(st);
+    }
+    requestAnimationFrame(function() {
+      tick();
+      requestAnimationFrame(function() {
+        tick();
+        setTimeout(tick, 0);
+        setTimeout(tick, 50);
+        setTimeout(tick, 150);
+      });
+    });
+  }
+  function bindMrScrollPersistence() {
+    var el = document.getElementById('mr-scroll-root');
+    if (!el) return;
+    var t = null;
+    el.addEventListener(
+      'scroll',
+      function() {
+        if (t) clearTimeout(t);
+        t = setTimeout(function() {
+          saveMrScrollToStorage();
+        }, 120);
+      },
+      { passive: true }
+    );
+  }
+  function bindMrMachineFilterPreserveScroll() {
+    var sel = document.getElementById('mr-machine-select');
+    var form = document.querySelector('.mr-filter-form');
+    if (!sel || !form) return;
+    sel.addEventListener('change', function() {
+      saveMrScrollToStorage();
+      saveMrDetailScrollToStorage();
+      form.submit();
+    });
+  }
+  bindMrMachineFilterPreserveScroll();
+  bindMrScrollPersistence();
+  function bindMrDetailScrollPersistence() {
+    var el = document.getElementById('mr-detail-scroll');
+    if (!el) return;
+    var t = null;
+    el.addEventListener(
+      'scroll',
+      function() {
+        if (t) clearTimeout(t);
+        t = setTimeout(function() {
+          saveMrDetailScrollToStorage();
+        }, 120);
+      },
+      { passive: true }
+    );
+  }
+  bindMrDetailScrollPersistence();
 
   function getViewZoom() {
     var v = parseFloat(sessionStorage.getItem(VIEW_ZOOM_KEY), 10);
@@ -465,6 +633,8 @@
   document.addEventListener('mousedown', onMrColResizeStart);
 
   setZoom(getViewZoom());
+  scheduleMrScrollRestoreFromStorage();
+  scheduleMrDetailScrollRestoreFromStorage();
   document.getElementById('mr-zoom-in')?.addEventListener('click', function() { setZoom(getViewZoom() + 0.1); });
   document.getElementById('mr-zoom-out')?.addEventListener('click', function() { setZoom(getViewZoom() - 0.1); });
   document.getElementById('mr-zoom-reset')?.addEventListener('click', function() { setZoom(1); });
