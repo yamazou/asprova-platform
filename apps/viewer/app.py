@@ -209,6 +209,7 @@ def _sched_row_to_gantt_task(r: sqlite3.Row) -> Optional[dict]:
         'work_user_cycle_time': rd.get('work_user_cycle_time') or '',
         'work_user_proc_name': rd.get('work_user_proc_name') or '',
         'work_user_material': rd.get('work_user_material') or '',
+        'work_user_right_most_order_code': rd.get('work_user_right_most_order_code') or '',
         'delivery_date': rd.get('delivery_date') or '',
         'delivery_order_no': rd.get('delivery_order_no') or '',
         'delivery_item': rd.get('delivery_item') or '',
@@ -331,10 +332,23 @@ def _machines_for_gantt_dropdown(
 
 def _daily_schedule_process_name(row: sqlite3.Row) -> str:
     rd = _sqlite_row_as_dict(row)
-    return (
-        str(rd.get("work_user_proc_name") or "").strip()
-        or str(row["process_name"] or "").strip()
-    )
+    return str(rd.get("work_user_proc_name") or "").strip()
+
+
+def _daily_schedule_no_sort_key(row: sqlite3.Row) -> tuple:
+    """Daily Schedule の NO (RightMostOrder) をハイフン前の数値で昇順。"""
+    rd = _sqlite_row_as_dict(row)
+    no = str(rd.get("work_user_right_most_order_code") or "").strip()
+    rid = row["id"] or 0
+    if not no:
+        return (2, float("inf"), "", rid)
+    prefix = no.split("-", 1)[0].strip()
+    if not prefix:
+        return (1, float("inf"), no.lower(), rid)
+    try:
+        return (0, float(prefix), no.lower(), rid)
+    except (TypeError, ValueError):
+        return (1, float("inf"), no.lower(), rid)
 
 
 def _daily_schedule_float(raw) -> Optional[float]:
@@ -361,16 +375,105 @@ def _daily_schedule_fmt(raw) -> str:
     return f"{v:,.2f}".rstrip("0").rstrip(".")
 
 
+DAILY_SCHEDULE_DAY_SPAN = 3
+DAILY_SCHEDULE_SHIFT_HOUR_COLS = 9
+# 1 日あたり: PLAN + 9h + ACT (S1) + PLAN + 9h + ACT (S2)
+DAILY_SCHEDULE_COLS_PER_DAY = 2 + DAILY_SCHEDULE_SHIFT_HOUR_COLS * 2 + 2
+# 固定列: NO〜MC(2台目) まで 20 列（日付 SHIFT 列は 21 列目から）
+DAILY_SCHEDULE_FIXED_COLS = 20
+DAILY_SCHEDULE_TAIL_COLS = 5
+
+
 def _daily_schedule_date_range(date_str: str) -> tuple[datetime, datetime]:
     try:
         current_date = datetime.strptime(date_str, "%Y-%m-%d")
     except (TypeError, ValueError):
         current_date = datetime.now()
     start_date = datetime(current_date.year, current_date.month, current_date.day)
-    return start_date, start_date + timedelta(days=1)
+    return start_date, start_date + timedelta(days=DAILY_SCHEDULE_DAY_SPAN)
 
 
-def _build_daily_schedule_rows(schedule_rows: list[sqlite3.Row]) -> list[dict]:
+def _daily_schedule_day_list(start_date: datetime) -> list[datetime]:
+    return [start_date + timedelta(days=i) for i in range(DAILY_SCHEDULE_DAY_SPAN)]
+
+
+def _daily_schedule_day_label(d: datetime) -> str:
+    return d.strftime("%d-%b-%y").upper()
+
+
+def _daily_schedule_empty_day_slot() -> dict:
+    return {
+        "shift1_plan": "",
+        "shift1_hours": [""] * DAILY_SCHEDULE_SHIFT_HOUR_COLS,
+        "shift1_act": "",
+        "shift2_plan": "",
+        "shift2_hours": [""] * DAILY_SCHEDULE_SHIFT_HOUR_COLS,
+        "shift2_act": "",
+    }
+
+
+def _schedule_row_day_index(row: sqlite3.Row, day_list: list[datetime]) -> Optional[int]:
+    try:
+        start_dt = datetime.strptime(str(row["start_time"]), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    d = start_dt.date()
+    for i, day_start in enumerate(day_list):
+        if d == day_start.date():
+            return i
+    return None
+
+
+def _fill_daily_schedule_day_slot(row: sqlite3.Row, rd: dict) -> dict:
+    """1 工程を 1 日分の SHIFT 列（PLAN / 時間 / ACT）に展開する。"""
+    slot = _daily_schedule_empty_day_slot()
+    ct_val = _daily_schedule_float(rd.get("work_user_cycle_time"))
+    qty_val = (
+        rd.get("actual_quantity")
+        if rd.get("actual_quantity") is not None
+        else row["quantity"]
+    )
+    qty_num = _daily_schedule_float(qty_val) or 0.0
+    planned_minutes = (ct_val * qty_num / 60.0) if ct_val and qty_num else None
+
+    try:
+        start_dt = datetime.strptime(str(row["start_time"]), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        start_dt = None
+    is_shift2 = bool(start_dt and start_dt.hour >= 15)
+
+    if is_shift2:
+        slot["shift2_plan"] = _daily_schedule_fmt(qty_num) if qty_num else ""
+        slot["shift2_hours"][0] = (
+            _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
+        )
+    else:
+        slot["shift1_plan"] = _daily_schedule_fmt(qty_num) if qty_num else ""
+        slot["shift1_hours"][0] = (
+            _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
+        )
+
+    actual_qty = rd.get("actual_quantity")
+    actual_start = str(rd.get("actual_start") or "").strip()
+    actual_shift2 = False
+    if actual_start:
+        try:
+            actual_shift2 = (
+                datetime.strptime(actual_start, "%Y-%m-%d %H:%M:%S").hour >= 15
+            )
+        except ValueError:
+            actual_shift2 = is_shift2
+    actual_display = _daily_schedule_fmt(actual_qty) if actual_qty is not None else ""
+    if actual_display and not actual_shift2:
+        slot["shift1_act"] = actual_display
+    elif actual_display and actual_shift2:
+        slot["shift2_act"] = actual_display
+    return slot
+
+
+def _build_daily_schedule_rows(
+    schedule_rows: list[sqlite3.Row], day_list: list[datetime]
+) -> list[dict]:
     out: list[dict] = []
     for idx, row in enumerate(schedule_rows, start=1):
         rd = _sqlite_row_as_dict(row)
@@ -382,40 +485,17 @@ def _build_daily_schedule_rows(schedule_rows: list[sqlite3.Row]) -> list[dict]:
             else row["quantity"]
         )
         qty_num = _daily_schedule_float(qty_val) or 0.0
-        planned_minutes = (ct_val * qty_num / 60.0) if ct_val and qty_num else None
 
-        try:
-            start_dt = datetime.strptime(str(row["start_time"]), "%Y-%m-%d %H:%M:%S")
-        except (TypeError, ValueError):
-            start_dt = None
-        is_shift2 = bool(start_dt and start_dt.hour >= 15)
+        day_slots = [_daily_schedule_empty_day_slot() for _ in day_list]
+        day_idx = _schedule_row_day_index(row, day_list)
+        if day_idx is not None:
+            day_slots[day_idx] = _fill_daily_schedule_day_slot(row, rd)
 
-        shift1_hours = [""] * 9
-        shift2_hours = [""] * 9
-        shift1_plan = ""
-        shift2_plan = ""
-        if is_shift2:
-            shift2_plan = _daily_schedule_fmt(qty_num) if qty_num else ""
-            shift2_hours[0] = _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
-        else:
-            shift1_plan = _daily_schedule_fmt(qty_num) if qty_num else ""
-            shift1_hours[0] = _daily_schedule_fmt(planned_minutes) if planned_minutes else ""
-
-        actual_qty = rd.get("actual_quantity")
-        actual_start = str(rd.get("actual_start") or "").strip()
-        actual_shift2 = False
-        if actual_start:
-            try:
-                actual_shift2 = (
-                    datetime.strptime(actual_start, "%Y-%m-%d %H:%M:%S").hour >= 15
-                )
-            except ValueError:
-                actual_shift2 = is_shift2
-        actual_display = _daily_schedule_fmt(actual_qty) if actual_qty is not None else ""
-
+        right_most_no = str(rd.get("work_user_right_most_order_code") or "").strip()
         out.append(
             {
-                "no": str(row["operation_code"] or "").strip() or str(idx),
+                "no": right_most_no or str(idx),
+                "day_slots": day_slots,
                 "part_name": (
                     str(row["order_item_code"] or "").strip()
                     or str(row["operation_out_item"] or "").strip()
@@ -444,12 +524,6 @@ def _build_daily_schedule_rows(schedule_rows: list[sqlite3.Row]) -> list[dict]:
                 "qty_plan": _daily_schedule_fmt(qty_num) if qty_num else "",
                 "operator": "",
                 "mc_secondary": "",
-                "shift1_plan": shift1_plan,
-                "shift1_hours": shift1_hours,
-                "shift1_act": actual_display if actual_display and not actual_shift2 else "",
-                "shift2_plan": shift2_plan,
-                "shift2_hours": shift2_hours,
-                "shift2_act": actual_display if actual_display and actual_shift2 else "",
                 "ng": "",
                 "kip": "",
                 "claim_customer": "",
@@ -468,11 +542,9 @@ def _daily_schedule_context(date_str: str, process_filter: str) -> dict:
     try:
         processes_raw = conn.execute(
             """
-            SELECT DISTINCT
-              TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) AS process_name
+            SELECT DISTINCT TRIM(work_user_proc_name) AS process_name
             FROM schedules
-            WHERE TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) <> ''
-              AND UPPER(TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, '')))) <> 'PURCHASE'
+            WHERE TRIM(COALESCE(work_user_proc_name, '')) <> ''
             ORDER BY process_name
             """
         ).fetchall()
@@ -481,8 +553,7 @@ def _daily_schedule_context(date_str: str, process_filter: str) -> dict:
             FROM schedules
             WHERE start_time >= ?
               AND start_time < ?
-              AND TRIM(COALESCE(NULLIF(item_id, ''), NULLIF(operation_out_item, ''), NULLIF(item_name, ''))) <> ''
-              AND UPPER(TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, '')))) <> 'PURCHASE'
+              AND TRIM(COALESCE(work_user_proc_name, '')) <> ''
         """
         params = [
             start_date.strftime('%Y-%m-%d %H:%M:%S'),
@@ -490,35 +561,107 @@ def _daily_schedule_context(date_str: str, process_filter: str) -> dict:
         ]
         if process_filter:
             query += """
-              AND TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))) = ?
+              AND TRIM(work_user_proc_name) = ?
             """
             params.append(process_filter)
-        query += """
-            ORDER BY
-              TRIM(COALESCE(NULLIF(work_user_proc_name, ''), NULLIF(process_name, ''))),
-              machine_name,
-              start_time,
-              id
-        """
-        schedule_rows = conn.execute(query, params).fetchall()
+        schedule_rows = sorted(
+            conn.execute(query, params).fetchall(),
+            key=_daily_schedule_no_sort_key,
+        )
     finally:
         conn.close()
 
     current_date = start_date
+    day_list = _daily_schedule_day_list(start_date)
+    daily_rows = _build_daily_schedule_rows(list(schedule_rows), day_list)
+    daily_op_count = len(daily_rows)
+    span_end = day_list[-1]
+    date_range_label = (
+        f"{_daily_schedule_day_label(day_list[0])} – {_daily_schedule_day_label(span_end)}"
+    )
+    shift_cols_total = DAILY_SCHEDULE_COLS_PER_DAY * len(day_list)
+    table_colspan = (
+        DAILY_SCHEDULE_FIXED_COLS + shift_cols_total + DAILY_SCHEDULE_TAIL_COLS
+    )
     return {
         "current_date": current_date,
-        "prev_date": (current_date - timedelta(days=1)).strftime('%Y-%m-%d'),
-        "next_date": (current_date + timedelta(days=1)).strftime('%Y-%m-%d'),
+        "prev_date": (current_date - timedelta(days=DAILY_SCHEDULE_DAY_SPAN)).strftime(
+            "%Y-%m-%d"
+        ),
+        "next_date": (current_date + timedelta(days=DAILY_SCHEDULE_DAY_SPAN)).strftime(
+            "%Y-%m-%d"
+        ),
         "selected_date": current_date.strftime('%Y-%m-%d'),
-        "selected_date_label": current_date.strftime('%d-%b-%y').upper(),
+        "selected_date_label": date_range_label,
+        "daily_days": [
+            {"date": d.strftime("%Y-%m-%d"), "label": _daily_schedule_day_label(d)}
+            for d in day_list
+        ],
+        "daily_day_span": DAILY_SCHEDULE_DAY_SPAN,
+        "daily_shift_cols_per_day": DAILY_SCHEDULE_COLS_PER_DAY,
+        "daily_table_colspan": table_colspan,
         "processes": [
             str(r['process_name'] or '').strip()
             for r in processes_raw
             if str(r['process_name'] or '').strip()
         ],
         "process_filter": process_filter,
-        "daily_rows": _build_daily_schedule_rows(list(schedule_rows)),
+        "daily_rows": daily_rows,
+        "daily_op_count": daily_op_count,
+        "line_pressing_label": _daily_schedule_line_pressing_label(
+            process_filter, daily_op_count
+        ),
     }
+
+
+def _daily_schedule_row_flat_values(r: dict) -> list:
+    """Excel 出力用: 固定列 + 各日 SHIFT 列 + 末尾列を 1 行に並べる。"""
+    vals = [
+        r["no"],
+        r["part_name"],
+        r["cycle_time"],
+        r["pcs_per_hour"],
+        r["line"],
+        r["process"],
+        r["packing_type"],
+        r["packing_box"],
+        r["packing_qty"],
+        r["machine"],
+        r["material"],
+        r["fix_machine"],
+        r["plan_machine_2"],
+        r["material_plate"],
+        r["plate_need"],
+        r["category"],
+        r["rate"],
+        r["qty_plan"],
+        r["operator"],
+        r["mc_secondary"],
+    ]
+    for slot in r.get("day_slots") or []:
+        vals.extend(
+            [
+                slot["shift1_plan"],
+                *slot["shift1_hours"],
+                slot["shift1_act"],
+                slot["shift2_plan"],
+                *slot["shift2_hours"],
+                slot["shift2_act"],
+            ]
+        )
+    vals.extend(
+        [r["ng"], r["kip"], r["claim_customer"], r["remark"], r["spot"]]
+    )
+    return vals
+
+
+def _daily_schedule_line_pressing_label(process_filter: str, op_count: int) -> str:
+    """LINE PRESSING 行の表示（Gantt のリソース行と同様に ops 件数を付与）。"""
+    base = "LINE PRESSING"
+    if process_filter:
+        base += f" - {process_filter}"
+    suffix = "op" if op_count == 1 else "ops"
+    return f"{base}  {op_count} {suffix}"
 
 
 @app.context_processor
@@ -640,6 +783,7 @@ def init_db():
             work_user_cycle_time TEXT,
             work_user_proc_name TEXT,
             work_user_material TEXT,
+            work_user_right_most_order_code TEXT,
             delivery_date TEXT,
             delivery_order_no TEXT,
             delivery_item TEXT,
@@ -702,6 +846,10 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE schedules ADD COLUMN work_user_proc_name TEXT")
         if "work_user_material" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN work_user_material TEXT")
+        if "work_user_right_most_order_code" not in cols:
+            conn.execute(
+                "ALTER TABLE schedules ADD COLUMN work_user_right_most_order_code TEXT"
+            )
         if "delivery_date" not in cols:
             conn.execute("ALTER TABLE schedules ADD COLUMN delivery_date TEXT")
         if "delivery_order_no" not in cols:
@@ -800,6 +948,17 @@ def ensure_db_schema():
         conn.commit()
     finally:
         conn.close()
+
+
+def _viewer_startup_db() -> None:
+    """Import / 起動時に schedule.db のスキーマを最新化する（ALTER が Import 前に必要）。"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    init_db()
+    ensure_db_schema()
+
+
+_viewer_startup_db()
 
 
 def get_latest_schedule_date():
@@ -908,8 +1067,8 @@ def upload():
 
                 conn.execute('''
                     INSERT INTO schedules 
-                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, work_user_res_order, work_user_cycle_time, work_user_proc_name, work_user_material, delivery_date, delivery_order_no, delivery_item, delivery_item_name, min_skill, qc_skill, co_cd)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (order_id, order_item_code, operation_id, next_operation_id, operation_code, next_operation_code, operation_out_item, item_id, item_name, machine_id, machine_name, start_time, end_time, quantity, status, process_name, setup_minutes, actual_start, actual_end, actual_resource, work_group, work_user_res_order, work_user_cycle_time, work_user_proc_name, work_user_material, work_user_right_most_order_code, delivery_date, delivery_order_no, delivery_item, delivery_item_name, min_skill, qc_skill, co_cd)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     rec['order_id'],
                     rec['order_item_code'],
@@ -936,6 +1095,7 @@ def upload():
                     rec.get('work_user_cycle_time'),
                     rec.get('work_user_proc_name'),
                     rec.get('work_user_material'),
+                    rec.get('work_user_right_most_order_code'),
                     rec.get('delivery_date'),
                     rec.get('delivery_order_no'),
                     rec.get('delivery_item'),
@@ -1385,102 +1545,113 @@ def export_daily_schedule():
     shift_fill = PatternFill("solid", fgColor="FFF2CC")
     date_fill = PatternFill("solid", fgColor="FCE4D6")
 
-    ws.merge_cells("A1:AU1")
+    total_cols = int(ctx["daily_table_colspan"])
+    tail_start_col = total_cols - DAILY_SCHEDULE_TAIL_COLS + 1
+    last_letter = get_column_letter(total_cols)
+    line_end_letter = get_column_letter(tail_start_col - 1)
+    tail_start_letter = get_column_letter(tail_start_col)
+
+    ws.merge_cells(f"A1:{last_letter}1")
     ws["A1"] = "SCHEDULE PROSES PRODUKSI"
     ws["A1"].font = title_font
     ws["A1"].alignment = left
-    ws.merge_cells("A3:AS3")
-    ws["A3"] = f"LINE PRESSING{' - ' + process_filter if process_filter else ''}"
+    ws.merge_cells(f"A3:{line_end_letter}3")
+    ws["A3"] = ctx.get("line_pressing_label") or _daily_schedule_line_pressing_label(
+        process_filter, len(rows)
+    )
     ws["A3"].font = header_font
     ws["A3"].alignment = left
-    ws.merge_cells("AT3:AU3")
-    ws["AT3"] = "REGULER"
-    ws["AT3"].font = header_font
-    ws["AT3"].alignment = center
+    ws.merge_cells(f"{tail_start_letter}3:{last_letter}3")
+    ws[f"{tail_start_letter}3"] = "REGULER"
+    ws[f"{tail_start_letter}3"].font = header_font
+    ws[f"{tail_start_letter}3"].alignment = center
 
-    merge_ranges = (
-        "A4:A6", "B4:B6", "C4:C6", "D4:D6", "E4:E6", "F4:F6",
-        "G4:I5", "J4:J6", "K4:K6", "L4:L6", "M4:M6", "N4:N6",
-        "O4:O6", "P4:P6", "Q4:Q6", "R4:R6", "S4:S6", "T4:T6",
-        "U4:AP4", "U5:AE5", "AF5:AP5", "AQ4:AQ6", "AR4:AR6",
-        "AS4:AS6", "AT4:AT6", "AU4:AU6",
+    fixed_header = (
+        ("NO", 1, 1, 6),
+        ("NAMA PART", 2, 2, 6),
+        ("CT (detik) BARU", 3, 3, 6),
+        ("PCS/JAM", 4, 4, 6),
+        ("LINE", 5, 5, 6),
+        ("PROSES", 6, 6, 6),
+        ("STANDAR PACKING", 7, 9, 5),
+        ("MC", 10, 10, 6),
+        ("MATERIAL", 11, 11, 6),
+        ("FIX MESIN", 12, 12, 6),
+        ("PLAN MESIN KE 2", 13, 13, 6),
+        ("MTL PLATE - IRIS /PCS", 14, 14, 6),
+        ("KEBUTUHAN/ PLATE", 15, 15, 6),
+        ("KATEGORI", 16, 16, 6),
+        ("RATE", 17, 17, 6),
+        ("QTY PLAN", 18, 18, 6),
+        ("OPERATOR", 19, 19, 6),
+        ("MC", 20, 20, 6),
     )
-    for rng in merge_ranges:
-        ws.merge_cells(rng)
+    for label, c_start, c_end, merge_to_row in fixed_header:
+        ws.cell(4, c_start, label)
+        if c_start == c_end:
+            ws.merge_cells(
+                start_row=4,
+                start_column=c_start,
+                end_row=merge_to_row,
+                end_column=c_end,
+            )
+        else:
+            ws.cell(6, c_start, "TYPE")
+            ws.cell(6, c_start + 1, "BOX")
+            ws.cell(6, c_start + 2, "QTY")
+            ws.merge_cells(
+                start_row=4,
+                start_column=c_start,
+                end_row=5,
+                end_column=c_end,
+            )
 
-    header_values = {
-        "A4": "NO",
-        "B4": "NAMA PART",
-        "C4": "CT (detik) BARU",
-        "D4": "PCS/JAM",
-        "E4": "LINE",
-        "F4": "PROSES",
-        "G4": "STANDAR PACKING",
-        "J4": "MC",
-        "K4": "MATERIAL",
-        "L4": "FIX MESIN",
-        "M4": "PLAN MESIN KE 2",
-        "N4": "MTL PLATE - IRIS /PCS",
-        "O4": "KEBUTUHAN/ PLATE",
-        "P4": "KATEGORI",
-        "Q4": "RATE",
-        "R4": "QTY PLAN",
-        "S4": "OPERATOR",
-        "T4": "MC",
-        "U4": ctx["selected_date_label"],
-        "AQ4": "NG",
-        "AR4": "KIP",
-        "AS4": "CLAIM CUSTOMER",
-        "AT4": "REMARK",
-        "AU4": "SPOT",
-        "U5": "SHIFT 1",
-        "AF5": "SHIFT 2",
-        "G6": "TYPE",
-        "H6": "BOX",
-        "I6": "QTY",
-        "U6": "PLAN",
-        "AE6": "ACT",
-        "AF6": "PLAN",
-        "AP6": "ACT",
-    }
-    for idx, value in enumerate(range(1, 10), start=22):
-        ws.cell(row=6, column=idx, value=value)
-    for idx, value in enumerate(range(1, 10), start=33):
-        ws.cell(row=6, column=idx, value=value)
-    for coord, value in header_values.items():
-        ws[coord] = value
+    shift_start_col = DAILY_SCHEDULE_FIXED_COLS + 1
+    for di, day in enumerate(ctx["daily_days"]):
+        c0 = shift_start_col + di * DAILY_SCHEDULE_COLS_PER_DAY
+        c1 = c0 + DAILY_SCHEDULE_COLS_PER_DAY - 1
+        s2_start = c0 + 11
+        ws.cell(4, c0, day["label"])
+        ws.merge_cells(start_row=4, start_column=c0, end_row=4, end_column=c1)
+        ws.cell(5, c0, "SHIFT 1")
+        ws.merge_cells(start_row=5, start_column=c0, end_row=5, end_column=c0 + 10)
+        ws.cell(5, s2_start, "SHIFT 2")
+        ws.merge_cells(start_row=5, start_column=s2_start, end_row=5, end_column=c1)
+        ws.cell(6, c0, "PLAN")
+        for h in range(1, 10):
+            ws.cell(6, c0 + h, h)
+        ws.cell(6, c0 + 10, "ACT")
+        ws.cell(6, s2_start, "PLAN")
+        for h in range(1, 10):
+            ws.cell(6, s2_start + h, h)
+        ws.cell(6, c1, "ACT")
 
+    tail_labels = ("NG", "KIP", "CLAIM CUSTOMER", "REMARK", "SPOT")
+    for i, label in enumerate(tail_labels):
+        col = tail_start_col + i
+        ws.merge_cells(start_row=4, start_column=col, end_row=6, end_column=col)
+        ws.cell(4, col, label)
+
+    shift_end_col = shift_start_col + len(ctx["daily_days"]) * DAILY_SCHEDULE_COLS_PER_DAY - 1
     for row_idx in range(4, 7):
-        for col_idx in range(1, 48):
+        for col_idx in range(1, total_cols + 1):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.font = header_font
             cell.border = border
             cell.alignment = center
-            if 21 <= col_idx <= 42 and row_idx == 4:
+            if shift_start_col <= col_idx <= shift_end_col and row_idx == 4:
                 cell.fill = date_fill
-            elif 21 <= col_idx <= 42 and row_idx == 5:
+            elif shift_start_col <= col_idx <= shift_end_col and row_idx == 5:
                 cell.fill = shift_fill
-            elif row_idx == 6:
+            elif shift_start_col <= col_idx <= shift_end_col and row_idx == 6:
                 cell.fill = sub_fill
-            else:
-                cell.fill = green_fill
-
-    def row_values(r: dict) -> list:
-        return [
-            r["no"], r["part_name"], r["cycle_time"], r["pcs_per_hour"], r["line"],
-            r["process"], r["packing_type"], r["packing_box"], r["packing_qty"],
-            r["machine"], r["material"], r["fix_machine"], r["plan_machine_2"],
-            r["material_plate"], r["plate_need"], r["category"], r["rate"],
-            r["qty_plan"], r["operator"], r["mc_secondary"], r["shift1_plan"],
-            *r["shift1_hours"], r["shift1_act"], r["shift2_plan"],
-            *r["shift2_hours"], r["shift2_act"], r["ng"], r["kip"],
-            r["claim_customer"], r["remark"], r["spot"],
-        ]
+            elif col_idx <= DAILY_SCHEDULE_FIXED_COLS:
+                cell.fill = green_fill if row_idx < 6 else sub_fill
 
     for r in rows:
-        ws.append(row_values(r))
+        ws.append(_daily_schedule_row_flat_values(r))
 
-    for row in ws.iter_rows(min_row=7, max_row=ws.max_row, min_col=1, max_col=47):
+    for row in ws.iter_rows(min_row=7, max_row=ws.max_row, min_col=1, max_col=total_cols):
         for cell in row:
             cell.font = body_font
             cell.border = border
@@ -1495,7 +1666,7 @@ def export_daily_schedule():
         "M": 16, "N": 18, "O": 18, "P": 12, "Q": 10, "R": 12,
         "S": 12, "T": 10, "AS": 18, "AT": 18,
     }
-    for col in range(1, 48):
+    for col in range(1, total_cols + 1):
         letter = get_column_letter(col)
         ws.column_dimensions[letter].width = widths.get(letter, 9)
     for row_idx in range(1, ws.max_row + 1):
@@ -3388,10 +3559,6 @@ def export_psi():
 
 
 if __name__ == '__main__':
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    init_db()
-    ensure_db_schema()
     _viewer_app_py = Path(__file__).resolve()
     print()
     print('=== ASPROVA Viewer (SQLite / Gantt) ===')

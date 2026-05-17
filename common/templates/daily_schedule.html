@@ -90,21 +90,133 @@
   background: #ffffff;
   overflow: hidden;
 }
-.daily-scroll {
-  max-height: 72vh;
-  overflow: auto;
-}
-.daily-sheet {
-  width: max-content;
-  min-width: 100%;
-  border-collapse: collapse;
+.daily-sheet-banner {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;
   color: #111827;
+  --daily-h-title: 28px;
+  --daily-h-process: 24px;
+}
+.daily-sheet-banner th {
+  border: 1px solid #8ca0b3;
+  box-sizing: border-box;
+  padding: 4px 6px;
+}
+.daily-scroll {
+  max-height: 72vh;
+  overflow: auto;
+  position: relative;
+}
+.daily-split {
+  width: max-content;
+}
+.daily-split-head,
+.daily-split-body {
+  display: flex;
+  width: max-content;
+  align-items: flex-start;
+}
+/* 縦スクロール: ヘッダー帯をまとめて固定 */
+.daily-split-head {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #ffffff;
+}
+.daily-sheet-frozen {
+  flex: 0 0 auto;
+  position: sticky;
+  left: 0;
+  z-index: 20;
+  min-width: 0;
+  background: #ffffff;
+  box-shadow: 4px 0 8px -2px rgba(30, 58, 95, 0.2);
+}
+.daily-split-head .daily-sheet-frozen {
+  z-index: 102;
+}
+.daily-sheet-scroll {
+  flex: 0 0 auto;
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+.daily-split .daily-sheet-frozen,
+.daily-split .daily-sheet-scroll {
+  min-width: 0;
+  width: auto;
+}
+.daily-split .daily-sheet {
+  min-width: 0;
+}
+.daily-sheet-frozen .daily-part {
+  border-right: 2px solid #8ca0b3;
+}
+/* ヘッダー帯内は th の個別 sticky を使わない（帯全体で縦固定） */
+.daily-split-head .daily-sheet thead {
+  position: relative;
+  z-index: auto;
+}
+.daily-split-head .daily-sheet-scroll thead {
+  z-index: 1;
+}
+.daily-split-head .daily-sheet-frozen thead {
+  z-index: 10;
+}
+.daily-split-head .daily-sheet thead th {
+  position: relative;
+  top: auto;
+  z-index: 1;
+  box-shadow: none;
+}
+.daily-split-head .daily-sheet-frozen thead th {
+  z-index: 3;
+  background: #d9ead3 !important;
+}
+.daily-split-head .daily-sheet thead tr:nth-child(1) th,
+.daily-split-head .daily-sheet thead tr:nth-child(2) th,
+.daily-split-head .daily-sheet thead tr:nth-child(3) th {
+  top: auto;
+}
+.daily-split-body .daily-sheet thead {
+  display: none;
+}
+.daily-sheet-banner .daily-title-row th {
+  background: #ffffff;
+  border-color: #ffffff;
+  text-align: left;
+  font-size: 14px;
+  height: var(--daily-h-title);
+}
+.daily-sheet-banner .daily-process-row th {
+  background: #ffffff;
+  border-color: #ffffff;
+  text-align: left;
+  font-size: 12px;
+  height: var(--daily-h-process);
+}
+.daily-sheet {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: #111827;
+  --daily-h-head: 24px;
+  --daily-top-head2: var(--daily-h-head);
+  --daily-top-head3: calc(var(--daily-h-head) * 2);
+  --daily-w-no: 64px;
+  --daily-w-part: 200px;
 }
 .daily-sheet th,
 .daily-sheet td {
+  box-sizing: border-box;
   border: 1px solid #8ca0b3;
   padding: 4px 6px;
   min-width: 58px;
@@ -112,30 +224,48 @@
   vertical-align: middle;
   white-space: nowrap;
 }
+.daily-sheet thead {
+  position: relative;
+  z-index: 30;
+}
+.daily-sheet tbody {
+  position: relative;
+  z-index: 1;
+}
 .daily-sheet thead th {
+  position: sticky;
   background: #d9ead3;
   color: #111827;
   font-weight: 700;
   text-align: center;
+  z-index: 10;
+  box-shadow: 0 1px 0 rgba(30, 58, 95, 0.12);
 }
-.daily-sheet thead tr:first-child th {
-  position: sticky;
+.daily-sheet-frozen thead th {
+  z-index: 25;
+}
+.daily-sheet thead tr:nth-child(1) th {
   top: 0;
-  z-index: 4;
+  z-index: 12;
+  height: var(--daily-h-head);
 }
-.daily-sheet .daily-title-row th {
-  background: #ffffff;
-  border-color: #ffffff;
-  text-align: left;
-  font-size: 14px;
-  height: 28px;
+.daily-sheet thead tr:nth-child(2) th {
+  top: var(--daily-top-head2);
+  z-index: 11;
+  height: var(--daily-h-head);
 }
-.daily-sheet .daily-process-row th {
-  background: #ffffff;
-  border-color: #ffffff;
-  text-align: left;
-  font-size: 12px;
-  height: 24px;
+.daily-sheet thead tr:nth-child(3) th {
+  top: var(--daily-top-head3);
+  z-index: 10;
+  height: var(--daily-h-head);
+}
+.daily-sheet-banner .daily-op-count,
+.daily-sheet .daily-op-count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 10px;
+  font-weight: 400;
 }
 .daily-sheet .daily-reguler-cell {
   text-align: center;
@@ -149,6 +279,15 @@
 .daily-sheet .daily-sub-head {
   background: #e2f0d9;
 }
+/* rowspan ヘッダが 2〜3 行分の sticky 高さを確保する */
+.daily-sheet thead tr:nth-child(1) th.daily-sticky-span3 {
+  min-height: calc(var(--daily-h-head) * 3);
+  vertical-align: middle;
+}
+.daily-sheet thead tr:nth-child(1) th.daily-sticky-span2 {
+  min-height: calc(var(--daily-h-head) * 2);
+  vertical-align: middle;
+}
 .daily-sheet .daily-num {
   text-align: right;
 }
@@ -158,11 +297,38 @@
 .daily-sheet tbody tr:nth-child(even) td {
   background: #f8fff3;
 }
-.daily-sheet tbody tr:hover td {
+.daily-sheet tbody tr:hover td,
+.daily-sheet tbody tr.daily-row-hover td {
   background: #eaf6ff;
 }
-.daily-no { min-width: 64px; }
-.daily-part { min-width: 190px; }
+.daily-no {
+  min-width: var(--daily-w-no);
+  max-width: var(--daily-w-no);
+  width: var(--daily-w-no);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.daily-part {
+  min-width: var(--daily-w-part);
+  max-width: var(--daily-w-part);
+  width: var(--daily-w-part);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.daily-sheet-frozen tbody td.daily-no,
+.daily-sheet-frozen tbody td.daily-part {
+  background: #ffffff;
+}
+.daily-sheet-frozen tbody tr:nth-child(even) td.daily-no,
+.daily-sheet-frozen tbody tr:nth-child(even) td.daily-part {
+  background: #f8fff3;
+}
+.daily-sheet-frozen tbody tr:hover td.daily-no,
+.daily-sheet-frozen tbody tr:hover td.daily-part,
+.daily-sheet-frozen tbody tr.daily-row-hover td.daily-no,
+.daily-sheet-frozen tbody tr.daily-row-hover td.daily-part {
+  background: #eaf6ff;
+}
 .daily-ct { min-width: 92px; }
 .daily-pcs { min-width: 78px; }
 .daily-line { min-width: 84px; }
@@ -229,50 +395,73 @@
 </div>
 
 <div class="daily-card">
+  <table class="daily-sheet-banner">
+    <tbody>
+      <tr class="daily-title-row">
+        <th>SCHEDULE PROSES PRODUKSI</th>
+      </tr>
+      <tr class="daily-process-row">
+        <th>
+          LINE PRESSING{% if process_filter %} - {{ process_filter }}{% endif %}<span class="daily-op-count">{{ daily_op_count }} op{% if daily_op_count != 1 %}s{% endif %}</span>
+        </th>
+      </tr>
+    </tbody>
+  </table>
   <div class="daily-scroll">
-    <table class="daily-sheet">
-      <thead>
-        <tr class="daily-title-row">
-          <th colspan="47">SCHEDULE PROSES PRODUKSI</th>
-        </tr>
-        <tr class="daily-process-row">
-          <th colspan="42">LINE PRESSING{% if process_filter %} - {{ process_filter }}{% endif %}</th>
-          <th colspan="5" class="daily-reguler-cell">REGULER</th>
+    {% if daily_rows %}
+    <div class="daily-split" id="daily-split">
+      <div class="daily-split-head">
+        <table class="daily-sheet daily-sheet-frozen" id="daily-sheet-frozen-head">
+          <colgroup>
+            <col style="width: 64px" />
+            <col style="width: 200px" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="daily-no daily-sticky-span3" rowspan="3">NO</th>
+              <th class="daily-part daily-sticky-span3" rowspan="3">NAMA PART</th>
+            </tr>
+          </thead>
+        </table>
+        <table class="daily-sheet daily-sheet-scroll" id="daily-sheet-scroll-head">
+          <thead>
+          <tr>
+            <th class="daily-ct daily-sticky-span3" rowspan="3">CT (detik) BARU</th>
+          <th class="daily-pcs daily-sticky-span3" rowspan="3">PCS/JAM</th>
+          <th class="daily-line daily-sticky-span3" rowspan="3">LINE</th>
+          <th class="daily-process daily-sticky-span3" rowspan="3">PROSES</th>
+          <th class="daily-sticky-span2" colspan="3" rowspan="2">STANDAR PACKING</th>
+          <th class="daily-sticky-span3" rowspan="3">MC</th>
+          <th class="daily-material daily-sticky-span3" rowspan="3">MATERIAL</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">FIX MESIN</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">PLAN MESIN KE 2</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">MTL PLATE - IRIS /PCS</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">KEBUTUHAN/ PLATE</th>
+          <th class="daily-sticky-span3" rowspan="3">KATEGORI</th>
+          <th class="daily-sticky-span3" rowspan="3">RATE</th>
+          <th class="daily-sticky-span3" rowspan="3">QTY PLAN</th>
+          <th class="daily-sticky-span3" rowspan="3">OPERATOR</th>
+          <th class="daily-sticky-span3" rowspan="3">MC</th>
+          {% for day in daily_days %}
+          <th class="daily-date-head" colspan="{{ daily_shift_cols_per_day }}">{{ day.label }}</th>
+          {% endfor %}
+          <th class="daily-sticky-span3" rowspan="3">NG</th>
+          <th class="daily-sticky-span3" rowspan="3">KIP</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">CLAIM CUSTOMER</th>
+          <th class="daily-wide daily-sticky-span3" rowspan="3">REMARK</th>
+          <th class="daily-sticky-span3" rowspan="3">SPOT</th>
         </tr>
         <tr>
-          <th class="daily-no" rowspan="3">NO</th>
-          <th class="daily-part" rowspan="3">NAMA PART</th>
-          <th class="daily-ct" rowspan="3">CT (detik) BARU</th>
-          <th class="daily-pcs" rowspan="3">PCS/JAM</th>
-          <th class="daily-line" rowspan="3">LINE</th>
-          <th class="daily-process" rowspan="3">PROSES</th>
-          <th colspan="3" rowspan="2">STANDAR PACKING</th>
-          <th rowspan="3">MC</th>
-          <th class="daily-material" rowspan="3">MATERIAL</th>
-          <th class="daily-wide" rowspan="3">FIX MESIN</th>
-          <th class="daily-wide" rowspan="3">PLAN MESIN KE 2</th>
-          <th class="daily-wide" rowspan="3">MTL PLATE - IRIS /PCS</th>
-          <th class="daily-wide" rowspan="3">KEBUTUHAN/ PLATE</th>
-          <th rowspan="3">KATEGORI</th>
-          <th rowspan="3">RATE</th>
-          <th rowspan="3">QTY PLAN</th>
-          <th rowspan="3">OPERATOR</th>
-          <th rowspan="3">MC</th>
-          <th class="daily-date-head" colspan="22">{{ selected_date_label }}</th>
-          <th rowspan="3">NG</th>
-          <th rowspan="3">KIP</th>
-          <th class="daily-wide" rowspan="3">CLAIM CUSTOMER</th>
-          <th class="daily-wide" rowspan="3">REMARK</th>
-          <th rowspan="3">SPOT</th>
-        </tr>
-        <tr>
+          {% for day in daily_days %}
           <th class="daily-shift-head" colspan="11">SHIFT 1</th>
           <th class="daily-shift-head" colspan="11">SHIFT 2</th>
+          {% endfor %}
         </tr>
         <tr>
           <th class="daily-sub-head">TYPE</th>
           <th class="daily-sub-head">BOX</th>
           <th class="daily-sub-head">QTY</th>
+          {% for day in daily_days %}
           <th class="daily-sub-head">PLAN</th>
           {% for h in range(1, 10) %}
           <th class="daily-sub-head">{{ h }}</th>
@@ -283,15 +472,31 @@
           <th class="daily-sub-head">{{ h }}</th>
           {% endfor %}
           <th class="daily-sub-head">ACT</th>
+          {% endfor %}
         </tr>
-      </thead>
-      <tbody>
-        {% if daily_rows %}
+          </thead>
+        </table>
+      </div>
+      <div class="daily-split-body">
+        <table class="daily-sheet daily-sheet-frozen" id="daily-sheet-frozen-body">
+          <colgroup>
+            <col style="width: 64px" />
+            <col style="width: 200px" />
+          </colgroup>
+          <tbody>
+            {% for row in daily_rows %}
+            <tr>
+              <td class="daily-text daily-no">{{ row.no }}</td>
+              <td class="daily-text daily-part">{{ row.part_name }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <table class="daily-sheet daily-sheet-scroll" id="daily-sheet-scroll-body">
+          <tbody>
           {% for row in daily_rows %}
           <tr>
-            <td class="daily-text">{{ row.no }}</td>
-            <td class="daily-text">{{ row.part_name }}</td>
-            <td class="daily-num">{{ row.cycle_time }}</td>
+            <td class="daily-num daily-ct">{{ row.cycle_time }}</td>
             <td class="daily-num">{{ row.pcs_per_hour }}</td>
             <td class="daily-text">{{ row.line }}</td>
             <td class="daily-text">{{ row.process }}</td>
@@ -309,16 +514,18 @@
             <td class="daily-num">{{ row.qty_plan }}</td>
             <td class="daily-text">{{ row.operator }}</td>
             <td class="daily-text">{{ row.mc_secondary }}</td>
-            <td class="daily-num">{{ row.shift1_plan }}</td>
-            {% for v in row.shift1_hours %}
+            {% for slot in row.day_slots %}
+            <td class="daily-num">{{ slot.shift1_plan }}</td>
+            {% for v in slot.shift1_hours %}
             <td class="daily-num">{{ v }}</td>
             {% endfor %}
-            <td class="daily-num">{{ row.shift1_act }}</td>
-            <td class="daily-num">{{ row.shift2_plan }}</td>
-            {% for v in row.shift2_hours %}
+            <td class="daily-num">{{ slot.shift1_act }}</td>
+            <td class="daily-num">{{ slot.shift2_plan }}</td>
+            {% for v in slot.shift2_hours %}
             <td class="daily-num">{{ v }}</td>
             {% endfor %}
-            <td class="daily-num">{{ row.shift2_act }}</td>
+            <td class="daily-num">{{ slot.shift2_act }}</td>
+            {% endfor %}
             <td class="daily-num">{{ row.ng }}</td>
             <td class="daily-text">{{ row.kip }}</td>
             <td class="daily-num">{{ row.claim_customer }}</td>
@@ -326,13 +533,19 @@
             <td class="daily-num">{{ row.spot }}</td>
           </tr>
           {% endfor %}
-        {% else %}
-          <tr>
-            <td colspan="47" class="daily-empty">No Daily Schedule records for the selected Process and Date.</td>
-          </tr>
-        {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% else %}
+    <table class="daily-sheet">
+      <tbody>
+        <tr>
+          <td colspan="{{ daily_table_colspan }}" class="daily-empty">No Daily Schedule records for the selected Process and Date.</td>
+        </tr>
       </tbody>
     </table>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
@@ -373,6 +586,155 @@
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') closePopup();
   });
+})();
+
+(function() {
+  var FROZEN_NO_W = 64;
+  var FROZEN_PART_W = 200;
+
+  function clearTableColWidths(table) {
+    if (!table) return;
+    var cg = table.querySelector('colgroup');
+    if (cg) cg.remove();
+    table.style.width = '';
+    table.querySelectorAll('th, td').forEach(function(cell) {
+      cell.style.width = '';
+      cell.style.minWidth = '';
+      cell.style.maxWidth = '';
+    });
+  }
+
+  function applyColgroup(table, widths) {
+    var cg = document.createElement('colgroup');
+    var i;
+    for (i = 0; i < widths.length; i++) {
+      var col = document.createElement('col');
+      col.style.width = widths[i] + 'px';
+      cg.appendChild(col);
+    }
+    table.insertBefore(cg, table.firstChild);
+    table.style.tableLayout = 'fixed';
+    var total = 0;
+    for (i = 0; i < widths.length; i++) total += widths[i];
+    table.style.width = total + 'px';
+  }
+
+  function syncFrozenColumnWidths() {
+    var frozenHead = document.getElementById('daily-sheet-frozen-head');
+    var frozenBody = document.getElementById('daily-sheet-frozen-body');
+    if (!frozenHead || !frozenBody) return;
+    var widths = [FROZEN_NO_W, FROZEN_PART_W];
+    clearTableColWidths(frozenHead);
+    clearTableColWidths(frozenBody);
+    applyColgroup(frozenHead, widths);
+    applyColgroup(frozenBody, widths);
+  }
+
+  function syncScrollColumnWidths() {
+    var scrollHead = document.getElementById('daily-sheet-scroll-head');
+    var scrollBody = document.getElementById('daily-sheet-scroll-body');
+    if (!scrollHead || !scrollBody) return;
+    var bodyRows = scrollBody.querySelectorAll('tbody tr');
+    if (!bodyRows.length) return;
+    var colCount = bodyRows[0].cells.length;
+    if (!colCount) return;
+
+    clearTableColWidths(scrollHead);
+    clearTableColWidths(scrollBody);
+    scrollHead.style.tableLayout = 'auto';
+    scrollBody.style.tableLayout = 'auto';
+
+    var widths = [];
+    var i;
+    var r;
+    var c;
+    var w;
+    for (i = 0; i < colCount; i++) {
+      w = 58;
+      for (r = 0; r < bodyRows.length; r++) {
+        c = bodyRows[r].cells[i];
+        if (c) w = Math.max(w, c.getBoundingClientRect().width);
+      }
+      widths[i] = Math.ceil(w);
+    }
+
+    applyColgroup(scrollHead, widths);
+    applyColgroup(scrollBody, widths);
+  }
+
+  function syncDailySplitLayout() {
+    syncFrozenColumnWidths();
+    syncScrollColumnWidths();
+
+    var frozen = document.getElementById('daily-sheet-frozen-body');
+    var scroll = document.getElementById('daily-sheet-scroll-body');
+    if (!frozen || !scroll) return;
+    var fRows = frozen.querySelectorAll('tbody tr');
+    var sRows = scroll.querySelectorAll('tbody tr');
+    var i;
+    for (i = 0; i < fRows.length && i < sRows.length; i++) {
+      fRows[i].style.height = '';
+      sRows[i].style.height = '';
+      var h = Math.max(fRows[i].offsetHeight, sRows[i].offsetHeight);
+      if (h > 0) {
+        fRows[i].style.height = h + 'px';
+        sRows[i].style.height = h + 'px';
+      }
+    }
+    var frozenHead = document.getElementById('daily-sheet-frozen-head');
+    var scrollHead = document.getElementById('daily-sheet-scroll-head');
+    if (!frozenHead || !scrollHead) return;
+    var fHead = frozenHead.querySelector('thead tr');
+    var sHead = scrollHead.querySelectorAll('thead tr');
+    if (fHead && sHead.length === 3) {
+      var headH = 0;
+      for (i = 0; i < sHead.length; i++) headH += sHead[i].offsetHeight;
+      if (headH > 0) fHead.style.height = headH + 'px';
+    }
+  }
+
+  function wireDailySplitHover() {
+    var frozen = document.getElementById('daily-sheet-frozen-body');
+    var scroll = document.getElementById('daily-sheet-scroll-body');
+    if (!frozen || !scroll) return;
+    var fRows = frozen.querySelectorAll('tbody tr');
+    var sRows = scroll.querySelectorAll('tbody tr');
+    function bindPair(idx) {
+      function on() {
+        fRows[idx].classList.add('daily-row-hover');
+        sRows[idx].classList.add('daily-row-hover');
+      }
+      function off() {
+        fRows[idx].classList.remove('daily-row-hover');
+        sRows[idx].classList.remove('daily-row-hover');
+      }
+      fRows[idx].addEventListener('mouseenter', on);
+      fRows[idx].addEventListener('mouseleave', off);
+      sRows[idx].addEventListener('mouseenter', on);
+      sRows[idx].addEventListener('mouseleave', off);
+    }
+    var i;
+    for (i = 0; i < fRows.length && i < sRows.length; i++) bindPair(i);
+  }
+
+  function initDailySplit() {
+    syncDailySplitLayout();
+    wireDailySplitHover();
+    requestAnimationFrame(function() {
+      syncDailySplitLayout();
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initDailySplit);
+  } else {
+    initDailySplit();
+  }
+  window.addEventListener('resize', syncDailySplitLayout);
+  var scrollEl = document.querySelector('.daily-scroll');
+  if (scrollEl && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(syncDailySplitLayout).observe(scrollEl);
+  }
 })();
 </script>
 {% endblock %}

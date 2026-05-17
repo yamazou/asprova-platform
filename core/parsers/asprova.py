@@ -271,6 +271,14 @@ def detect_columns(headers: list[str]) -> Dict[str, str]:
     mapping["work_user_material"] = find_exact("workuser_material") or find_col(
         "workuser_material",
     )
+    mapping["work_user_right_most_order_code"] = (
+        find_exact("workuser_rightmostordercode")
+        or find_col(
+            "workuser_rightmostordercode",
+            "workuser_right_most_order_code",
+            "workuser_rightmost_order_code",
+        )
+    )
     mapping["delivery_date"] = find_exact("workuser_deliverydate") or find_col(
         "workuser_deliverydate",
         "workuser_delivery_date",
@@ -359,6 +367,7 @@ def parse_schedule_upload_row(
     wct = _get_val(mapping, row, "work_user_cycle_time")
     wpn = _get_val(mapping, row, "work_user_proc_name")
     wm = _get_val(mapping, row, "work_user_material")
+    wrmoc = _get_val(mapping, row, "work_user_right_most_order_code")
     dd = _get_val(mapping, row, "delivery_date")
     don = _get_val(mapping, row, "delivery_order_no")
     di = _get_val(mapping, row, "delivery_item")
@@ -396,6 +405,7 @@ def parse_schedule_upload_row(
         "work_user_cycle_time": wct or None,
         "work_user_proc_name": wpn or None,
         "work_user_material": wm or None,
+        "work_user_right_most_order_code": wrmoc or None,
         "delivery_date": dd or None,
         "delivery_order_no": don or None,
         "delivery_item": di or None,
