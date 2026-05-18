@@ -5,7 +5,9 @@
 {% block content %}
 <style>
   .bridge-transaction-btn--disabled,
-  .bridge-transaction-btn--disabled:hover {
+  .bridge-transaction-btn--disabled:hover,
+  .bridge-master-btn--disabled,
+  .bridge-master-btn--disabled:hover {
     opacity: 0.45;
     cursor: not-allowed;
   }
@@ -16,21 +18,27 @@
   </div>
   <div class="card-body">
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-      <button type="button" class="btn btn-ghost" onclick="confirmDownload('integrated')">
-        Integrated Master
+      {# MASTER ボタンは core/customers/<id>.py の bridge_master_buttons() で定義 #}
+      {% for btn in customer_view.bridge_master_buttons %}
+      {% if btn.disabled %}
+      <button
+        type="button"
+        class="btn btn-ghost bridge-master-btn--disabled"
+        disabled
+        aria-disabled="true"
+      >
+        {{ btn.label }}
       </button>
-
-      <button type="button" class="btn btn-ghost" onclick="confirmDownload('item')">
-        Item Table
-      </button>
-
-      <button type="button" class="btn btn-ghost" onclick="confirmDownload('resource')">
-        Resource Table
-      </button>
-
+      {% elif btn.kind == 'line_cycle' %}
       <a href="{{ url_for('index', show_line_cycle='1') }}" class="btn btn-ghost">
-        Cycle Time Master
+        {{ btn.label }}
       </a>
+      {% else %}
+      <button type="button" class="btn btn-ghost" onclick="confirmDownload('{{ btn.kind }}')">
+        {{ btn.label }}
+      </button>
+      {% endif %}
+      {% endfor %}
     </div>
   </div>
 </div>
@@ -309,6 +317,33 @@
   let confirmTarget = null;
   let directoryHandle = null;
 
+  function clearDirectoryHandle(message) {
+    directoryHandle = null;
+    if (saveFolderLabel) {
+      saveFolderLabel.textContent = message || 'Browser default';
+    }
+  }
+
+  function isStaleDirectoryHandleError(err) {
+    const name = err && err.name ? String(err.name) : '';
+    const msg = err && err.message ? String(err.message) : String(err || '');
+    return (
+      name === 'NotFoundError' ||
+      name === 'InvalidStateError' ||
+      /state had changed/i.test(msg) ||
+      /no longer valid/i.test(msg)
+    );
+  }
+
+  function isFileLockedError(err) {
+    const msg = err && err.message ? String(err.message) : String(err || '');
+    return (
+      /truncate file/i.test(msg) ||
+      /being used by another process/i.test(msg) ||
+      /access denied/i.test(msg)
+    );
+  }
+
   function syncMcframeCoCdRow() {
     const sel = document.getElementById('erp_system');
     const row = document.getElementById('mcframe_co_cd_row');
@@ -401,6 +436,7 @@
     if (lineCycleTimeMasterCard) lineCycleTimeMasterCard.style.display = 'none';
     if (monthlyResultCard) monthlyResultCard.style.display = 'none';
     confirmTarget = target;
+    clearDirectoryHandle();
     if (excelSourceFile) excelSourceFile.value = '';
     if (excelSourceRow) excelSourceRow.style.display = erp === 'excel' ? '' : 'none';
     if (excelSourceLabel) excelSourceLabel.textContent = 'Source Excel/CSV';
@@ -408,10 +444,11 @@
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.OITT_TMP and dbo.ITT1_TMP (SAP B1 / SQL Server).'
         : (erp === 'excel'
-          ? 'Data is retrieved from selected source Excel/CSV.'
+          ? 'Data is built from worksheets "master code" and "Master main line by model" in the selected Excel file.'
           : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.');
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (master data)';
       downloadForm.action = "{{ url_for('download_integrated') }}";
-      saveFileName.value = 'integrated_master.csv';
+      saveFileName.value = 'IntegratedMaster.csv';
     } else if (target === 'item') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.OITM_TMP (SAP B1 / SQL Server).'
@@ -424,11 +461,11 @@
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.SHIP_SCH (SAP B1 / SQL Server).'
         : (erp === 'excel'
-          ? 'Data is retrieved from the "Shipment Plan" worksheet in the selected Excel file.'
+          ? 'Columns: ITM_CD←Actual Item, DLV_DT←exfact, REQ_QTY←Qty, CUST_CD=Shipping.'
           : 'Data is retrieved from ST_SHOYO_ALL.');
-      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (shipping plan)';
       downloadForm.action = "{{ url_for('download_order_table') }}";
-      saveFileName.value = 'order_table.csv';
+      saveFileName.value = 'shipping.csv';
     } else if (target === 'prd_plan') {
       confirmMessage.textContent = erp === 'excel'
         ? 'Data is retrieved from the "ProductionPlan" worksheet in the selected Excel file.'
@@ -440,11 +477,11 @@
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.BEG_INV (SAP B1 / SQL Server).'
         : (erp === 'excel'
-          ? 'Data is retrieved from the "FG stock" worksheet in the selected Excel file.'
+          ? 'Columns: ITM_CD←Material, STK_QTY←Available (aggregated by ITM_CD).'
           : 'Data is retrieved from ST_GNZAIKO_ALL.');
-      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel';
+      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (current stock)';
       downloadForm.action = "{{ url_for('download_inventory_table') }}";
-      saveFileName.value = 'inventory_table.csv';
+      saveFileName.value = 'CurrentStock.csv';
     } else if (target === 'inventory_wip') {
       confirmMessage.textContent = erp === 'excel'
         ? 'Data is retrieved from the worksheet starting with "Stock_list_" in the selected Excel file.'
@@ -469,22 +506,33 @@
     confirmBackdrop.classList.remove('show');
     confirmBackdrop.setAttribute('aria-hidden', 'true');
     confirmTarget = null;
+    clearDirectoryHandle();
+  }
+
+  function canUseFolderPicker() {
+    return !!(window.isSecureContext && window.showDirectoryPicker);
   }
 
   async function chooseFolder() {
-    if (!window.showDirectoryPicker) {
-      saveFolderLabel.textContent = 'Not supported in this browser';
+    if (!canUseFolderPicker()) {
+      saveFolderLabel.textContent = window.isSecureContext
+        ? 'Not supported in this browser'
+        : 'Requires HTTPS or localhost';
       return;
     }
     try {
-      directoryHandle = await window.showDirectoryPicker();
+      directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const writable = await ensureDirectoryWritable(directoryHandle);
+      if (!writable) {
+        clearDirectoryHandle('Write permission denied');
+        return;
+      }
       saveFolderLabel.textContent = directoryHandle?.name
         ? `Selected: ${directoryHandle.name}`
         : 'Selected';
     } catch (err) {
       if (err && err.name === 'AbortError') return;
-      directoryHandle = null;
-      saveFolderLabel.textContent = 'Folder select failed';
+      clearDirectoryHandle('Folder select failed');
     }
   }
 
@@ -493,6 +541,84 @@
     const opts = { mode: 'readwrite' };
     if (await handle.queryPermission(opts) === 'granted') return true;
     return (await handle.requestPermission(opts)) === 'granted';
+  }
+
+  async function ensureFileWritable(fileHandle) {
+    if (!fileHandle) return false;
+    const opts = { mode: 'readwrite' };
+    if (await fileHandle.queryPermission(opts) === 'granted') return true;
+    return (await fileHandle.requestPermission(opts)) === 'granted';
+  }
+
+  async function writeBlobToDirectory(dirHandle, fileName, blob) {
+    if (!(await ensureDirectoryWritable(dirHandle))) {
+      throw new Error('Folder write permission denied');
+    }
+    try {
+      try {
+        await dirHandle.removeEntry(fileName);
+      } catch (_) {
+        /* file may not exist yet */
+      }
+      const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+      if (!(await ensureFileWritable(fileHandle))) {
+        throw new Error('File write permission denied');
+      }
+      const stream = await fileHandle.createWritable();
+      try {
+        await stream.write(blob);
+      } finally {
+        await stream.close();
+      }
+    } catch (err) {
+      if (isStaleDirectoryHandleError(err)) {
+        clearDirectoryHandle('Folder expired — choose again');
+        throw new Error(
+          'Folder access expired. Click "Choose folder" again, or OK without choosing a folder.'
+        );
+      }
+      if (isFileLockedError(err)) {
+        throw new Error(
+          `Cannot write "${fileName}". Close it in Excel if it is open, then try again.`
+        );
+      }
+      throw err;
+    }
+  }
+
+  async function saveBlobWithFilePicker(blob, fileName) {
+    if (!window.showSaveFilePicker) return false;
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: fileName,
+        types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
+      });
+      if (!(await ensureFileWritable(handle))) {
+        return false;
+      }
+      const stream = await handle.createWritable();
+      try {
+        await stream.write(blob);
+      } finally {
+        await stream.close();
+      }
+      return true;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return false;
+      console.warn('showSaveFilePicker failed:', err);
+      return false;
+    }
+  }
+
+  function downloadBlobByBrowser(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function assertBridgeDownloadResponse(resp) {
@@ -507,22 +633,6 @@
     if (ct.includes('text/html')) {
       throw new Error('Received HTML instead of CSV. Connect again and retry.');
     }
-  }
-
-  async function downloadToChosenFolder() {
-    if (!directoryHandle) throw new Error('No folder selected');
-    const writable = await ensureDirectoryWritable(directoryHandle);
-    if (!writable) throw new Error('Folder write permission denied');
-
-    const fileName = (saveFileName.value || '').trim() || 'download.csv';
-    const resp = await fetch(downloadForm.action, { method: 'POST', credentials: 'same-origin' });
-    await assertBridgeDownloadResponse(resp);
-    const blob = await resp.blob();
-
-    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-    const stream = await fileHandle.createWritable();
-    await stream.write(blob);
-    await stream.close();
   }
 
   async function fetchExcelBlob() {
@@ -540,29 +650,65 @@
     return await resp.blob();
   }
 
-  async function downloadExcelToChosenFolder() {
+  async function downloadWithChosenFolder() {
     if (!directoryHandle) throw new Error('No folder selected');
-    const writable = await ensureDirectoryWritable(directoryHandle);
-    if (!writable) throw new Error('Folder write permission denied');
     const fileName = (saveFileName.value || '').trim() || 'download.csv';
-    const blob = await fetchExcelBlob();
-    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-    const stream = await fileHandle.createWritable();
-    await stream.write(blob);
-    await stream.close();
+    let blob = null;
+    try {
+      blob = await fetchDownloadBlob();
+      await writeBlobToDirectory(directoryHandle, fileName, blob);
+    } catch (err) {
+      await fallbackDownloadAfterFolderError(err, blob);
+    }
   }
 
   async function downloadExcelByBrowser() {
     const fileName = (saveFileName.value || '').trim() || 'download.csv';
     const blob = await fetchExcelBlob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadBlobByBrowser(blob, fileName);
+  }
+
+  async function fetchDownloadBlob() {
+    if (erp === 'excel') {
+      return await fetchExcelBlob();
+    }
+    const resp = await fetch(downloadForm.action, {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+    await assertBridgeDownloadResponse(resp);
+    return await resp.blob();
+  }
+
+  async function fallbackDownloadAfterFolderError(err, existingBlob) {
+    const folderDetail = err && err.message ? err.message : String(err);
+    console.error('Folder save failed:', err);
+    clearDirectoryHandle();
+    const fileName = (saveFileName.value || '').trim() || 'download.csv';
+    try {
+      const blob = existingBlob || (await fetchDownloadBlob());
+      downloadBlobByBrowser(blob, fileName);
+    } catch (e) {
+      console.error(e);
+      try {
+        const blob = existingBlob || (await fetchDownloadBlob());
+        if (await saveBlobWithFilePicker(blob, fileName)) {
+          return;
+        }
+        downloadBlobByBrowser(blob, fileName);
+      } catch (e2) {
+        const fallbackDetail = e2 && e2.message ? e2.message : String(e2);
+        alert(
+          'Download failed.\n\n' +
+          'Folder save: ' + folderDetail + '\n\n' +
+          'Fallback: ' + fallbackDetail + '\n\n' +
+          'Tip: Close the CSV in Excel if it is open, or export without "Choose folder".'
+        );
+        if (erp !== 'excel') {
+          downloadForm.submit();
+        }
+      }
+    }
   }
 
   function doConfirm() {
@@ -571,28 +717,14 @@
       alert('Please select a source Excel/CSV file.');
       return;
     }
-    if (directoryHandle && window.showDirectoryPicker) {
-      const runner = erp === 'excel' ? downloadExcelToChosenFolder : downloadToChosenFolder;
-      runner()
-        .catch((err) => {
-          console.error(err);
-          alert('Saving to the selected folder failed. Falling back to the standard download.');
-          if (erp === 'excel') {
-            downloadExcelByBrowser().catch((e) => {
-              console.error(e);
-              alert('Download failed.');
-            });
-          } else {
-            downloadForm.submit();
-          }
-        })
-        .finally(() => closeConfirm());
+    if (directoryHandle && canUseFolderPicker()) {
+      downloadWithChosenFolder().finally(() => closeConfirm());
     } else {
       if (erp === 'excel') {
         downloadExcelByBrowser()
           .catch((err) => {
             console.error(err);
-            alert('Download failed.');
+            alert(`Download failed: ${err && err.message ? err.message : err}`);
           })
           .finally(() => closeConfirm());
         return;

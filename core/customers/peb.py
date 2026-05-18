@@ -2,7 +2,8 @@
 
 主な差分:
     - Excel ローダ (Order/Prd Plan/Inventory/Inventory WIP) を専用関数に切替
-    - Bridge トップのボタン構成 (Shipping / Prd Plan / Inv. FG / Inv. WIP)
+    - Bridge トップの TRANSACTION (Shipping / Current Stock)
+    - MASTER は Integrated Master のみ
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ from core.erp.excel.peb_exports import (
     load_peb_monthly_result_rows_from_xlsx_bytes,
     load_peb_order_rows_from_xlsx_bytes,
     load_peb_prd_plan_rows_from_xlsx_bytes,
+)
+from core.erp.excel.peb_integrated_master import (
+    PEB_IMASTER_HEADERS,
+    build_peb_integrated_master_records,
 )
 
 from .base import BridgeButton, CustomerStrategy
@@ -53,6 +58,12 @@ class PebCustomer(CustomerStrategy):
             return None
         return loader(raw)
 
+    def build_integrated_master_records(self, raw: bytes) -> list[dict[str, str]]:
+        return build_peb_integrated_master_records(raw)
+
+    def integrated_master_csv_headers(self) -> tuple[str, ...]:
+        return PEB_IMASTER_HEADERS
+
     # ------------------------------------------------------------------
     # Bridge UI
     # ------------------------------------------------------------------
@@ -60,9 +71,12 @@ class PebCustomer(CustomerStrategy):
     def bridge_buttons(self) -> list[BridgeButton]:
         return [
             BridgeButton("order", "Shipping"),
-            BridgeButton("prd_plan", "Prd Plan"),
-            BridgeButton("inventory", "Inv. FG"),
-            BridgeButton("inventory_wip", "Inv. WIP"),
+            BridgeButton("inventory", "Current Stock"),
+        ]
+
+    def bridge_master_buttons(self) -> list[BridgeButton]:
+        return [
+            BridgeButton("integrated", "Integrated Master"),
         ]
 
     # ------------------------------------------------------------------

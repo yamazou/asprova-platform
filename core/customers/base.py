@@ -37,9 +37,9 @@ class PsiRowDefinition:
 
 @dataclass
 class BridgeButton:
-    """Bridge トップ画面の TRANSACTION ボタン定義。"""
+    """Bridge トップ画面の MASTER / TRANSACTION ボタン定義。"""
 
-    kind: str  # 'order' | 'prd_plan' | 'inventory' | 'inventory_wip'
+    kind: str
     label: str
     disabled: bool = False
 
@@ -57,6 +57,7 @@ class CustomerView:
     flags: dict[str, Any] = field(default_factory=dict)
     css: dict[str, str] = field(default_factory=dict)
     bridge_buttons: list[BridgeButton] = field(default_factory=list)
+    bridge_master_buttons: list[BridgeButton] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +159,16 @@ class CustomerStrategy:
             BridgeButton("inventory", "Inventory"),
         ]
 
+    def bridge_master_buttons(self) -> list[BridgeButton]:
+        """Bridge トップの MASTER ボタン構成。"""
+
+        return [
+            BridgeButton("integrated", "Integrated Master"),
+            BridgeButton("item", "Item Table"),
+            BridgeButton("resource", "Resource Table"),
+            BridgeButton("line_cycle", "Cycle Time Master"),
+        ]
+
     # ------------------------------------------------------------------
     # Viewer header menu (Schedule Viewer)
     # ------------------------------------------------------------------
@@ -191,6 +202,7 @@ class CustomerStrategy:
                 "psi_table_extra_class": self.psi_table_extra_class() or "",
             },
             bridge_buttons=list(self.bridge_buttons()),
+            bridge_master_buttons=list(self.bridge_master_buttons()),
         )
 
 

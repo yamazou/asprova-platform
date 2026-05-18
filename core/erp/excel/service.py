@@ -196,8 +196,41 @@ class ExcelBridgeService(BridgeErpService):
     def fetch_integrated_records(
         self, *, upload: Any = None
     ) -> list[dict[str, Any]]:
-        rows = self._load_rows("integrated", _INTEGRATED_HEADERS, upload)
-        return [dict(zip(_INTEGRATED_HEADERS, row)) for row in rows]
+        file_name = ""
+        raw = b""
+        if upload and getattr(upload, "filename", ""):
+            file_name = str(upload.filename or "").strip()
+            raw = upload.read()
+            if not raw:
+                raise RuntimeError("The selected source file is empty.")
+        else:
+            path = self._resolve_source_path("integrated")
+            if not path.exists():
+                raise RuntimeError(f"Excel/CSV file not found: {path}")
+            file_name = path.name
+            raw = path.read_bytes()
+
+        builder = getattr(self._customer, "build_integrated_master_records", None)
+        suffix = Path(file_name).suffix.lower()
+        if builder is not None and suffix in (".xlsx", ".xlsm"):
+            return builder(raw)
+
+        if suffix == ".csv":
+            dict_rows = _iter_dict_rows_from_csv_bytes(raw)
+        elif suffix in (".xlsx", ".xlsm"):
+            custom_rows = self._customer.load_excel_export_rows("integrated", raw)
+            if custom_rows is not None:
+                headers = _INTEGRATED_HEADERS
+                return [dict(zip(headers, row)) for row in custom_rows]
+            dict_rows = _iter_dict_rows_from_xlsx_bytes(raw)
+        else:
+            raise RuntimeError(
+                f"Unsupported file extension: {suffix} (.csv/.xlsx/.xlsm only)."
+            )
+        return [
+            dict(zip(_INTEGRATED_HEADERS, (str(row.get(h) or "").strip() for h in _INTEGRATED_HEADERS)))
+            for row in dict_rows
+        ]
 
     def fetch_item_rows(self, *, upload: Any = None) -> list[tuple]:
         return self._load_rows("item", _ITEM_TABLE_HEADERS, upload)

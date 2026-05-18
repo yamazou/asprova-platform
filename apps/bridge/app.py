@@ -51,6 +51,7 @@ COMMON_DIR = PLATFORM_ROOT / "common"
 sys.path.insert(0, str(PLATFORM_ROOT))
 from core.parsers.csv_loader import rows_to_csv
 from core.erp._base import BridgeErpService, NotSupportedError
+from core.erp.inventory_aggregate import aggregate_inventory_rows_by_itm_cd
 from core.customers import get_customer
 from config.bridge_customers import BRIDGE_CUSTOMERS
 from config.settings import DB_PATH
@@ -474,16 +475,39 @@ def _get_erp_service() -> BridgeErpService:
     raise RuntimeError(f"Unsupported ERP type: {erp}")
 
 
+def _excel_session_ready() -> bool:
+    """Excel ERP: Connect 済みかつ顧客プロファイルが有効か（DB ping 不要）。"""
+
+    if get_erp_system() != "excel":
+        return False
+    if not session.get("oracle_connected"):
+        return False
+    customer_id = str(session.get("customer_id") or "").strip()
+    if not customer_id:
+        return False
+    profile = BRIDGE_CUSTOMERS.get(customer_id)
+    if not isinstance(profile, dict):
+        return False
+    return bool(str(profile.get("excel_base_dir") or "").strip())
+
+
 def _verify_connection_alive() -> bool:
     """セッション上の ``oracle_connected`` が現在も実接続可能かを軽量検証する。
 
     フラグが立っていても DB が停止している場合は ``session["oracle_connected"]``
     を ``False`` に書き戻し、ヘッダ表示を ``DISCONNECTED`` に切り替える。
-    Excel 顧客のように接続を伴わない ERP は常に True 扱い。
+    Excel はファイル取込のため DB ping は行わず、Connect + 顧客選択のみ確認する。
     """
 
     if not session.get("oracle_connected"):
         return False
+
+    if get_erp_system() == "excel":
+        ready = _excel_session_ready()
+        if not ready:
+            session["oracle_connected"] = False
+        return ready
+
     try:
         service = _get_erp_service()
     except Exception:
@@ -556,7 +580,10 @@ def _get_selected_customer_profile() -> dict[str, str] | None:
 
 @app.route("/", methods=["GET"])
 def index():
-    show_line_cycle_master = (request.args.get("show_line_cycle") or "").strip() == "1"
+    show_line_cycle_master = (
+        (request.args.get("show_line_cycle") or "").strip() == "1"
+        and _line_cycle_master_allowed()
+    )
     show_monthly_result = (request.args.get("show_monthly_result") or "").strip() == "1"
     line_cycle_rows: list[dict] = []
     if show_line_cycle_master:
@@ -602,7 +629,10 @@ def monthly_result():
         flash(f"Failed to load Monthly Result: {exc}", "error")
         return redirect(url_for("index", show_monthly_result="1"))
 
-    show_line_cycle_master = (request.args.get("show_line_cycle") or "").strip() == "1"
+    show_line_cycle_master = (
+        (request.args.get("show_line_cycle") or "").strip() == "1"
+        and _line_cycle_master_allowed()
+    )
     line_cycle_rows: list[dict] = []
     if show_line_cycle_master:
         try:
@@ -665,6 +695,13 @@ def connect_oracle():
             return redirect(url_for("index"))
     if erp_system != "excel" and (not oracle_id or not oracle_pwd or not oracle_schema or not oracle_dsn):
         flash("Please enter ID / PASSWORD / SCHEMA(DB Name) / DNS(Server Name).", "error")
+        return redirect(url_for("index"))
+
+    if erp_system == "excel" and not customer_id:
+        flash(
+            "For Excel import, select a Company (e.g. PEB) in Connect, then click Connect.",
+            "error",
+        )
         return redirect(url_for("index"))
 
     co_cd_stored: str | None = None
@@ -770,7 +807,13 @@ def _require_connection_or_redirect():
 
     if _verify_connection_alive():
         return None
-    msg = "ERP is not connected. Please connect from Connect first."
+    if get_erp_system() == "excel":
+        msg = (
+            "Not connected. Open Connect, select Company (PEB), choose System: Excel, "
+            "then click Connect. For export, also select a source Excel file."
+        )
+    else:
+        msg = "ERP is not connected. Please connect from Connect first."
     flash(msg, "error")
     dest = (request.headers.get("Sec-Fetch-Dest") or "").lower()
     mode = (request.headers.get("Sec-Fetch-Mode") or "").lower()
@@ -806,6 +849,19 @@ def _bridge_kind_download_allowed(kind: str) -> bool:
     return True
 
 
+def _bridge_master_allowed(kind: str) -> bool:
+    """MASTER で ``disabled`` のボタンに対応する kind は利用不可。"""
+
+    for btn in get_customer(session.get("customer_id")).bridge_master_buttons():
+        if btn.kind == kind:
+            return not btn.disabled
+    return True
+
+
+def _line_cycle_master_allowed() -> bool:
+    return _bridge_master_allowed("line_cycle")
+
+
 def _sanitize_item_table_rows(rows: list[tuple]) -> list[tuple]:
     """Item table CSV: Asprova 連携都合で ITM_NM 内のカンマを ``#`` に置換する。"""
     out: list[tuple] = []
@@ -825,14 +881,25 @@ def download_integrated():
     guard = _require_connection_or_redirect()
     if guard is not None:
         return guard
+    if not _bridge_master_allowed("integrated"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
     try:
         service = _get_erp_service()
+        customer = get_customer(session.get("customer_id"))
+        headers = (
+            customer.integrated_master_csv_headers()
+            if hasattr(customer, "integrated_master_csv_headers")
+            else INTEGRATED_HEADERS
+        )
         records = service.fetch_integrated_records(
             upload=request.files.get("source_excel")
         )
-        records = _apply_cycle_time_to_integrated_records(records)
-        rows = [tuple(d[h] for h in INTEGRATED_HEADERS) for d in records]
-        csv_data = rows_to_csv(rows, INTEGRATED_HEADERS)
+        if headers == INTEGRATED_HEADERS:
+            records = _apply_cycle_time_to_integrated_records(records)
+        rows = [tuple(d[h] for h in headers) for d in records]
+        csv_data = rows_to_csv(rows, headers)
     except NotSupportedError as exc:
         return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -845,6 +912,10 @@ def download_item_table():
     guard = _require_connection_or_redirect()
     if guard is not None:
         return guard
+    if not _bridge_master_allowed("item"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
     try:
         service = _get_erp_service()
         rows = _sanitize_item_table_rows(
@@ -875,7 +946,10 @@ def download_order_table():
         return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
         return _download_error_response(f"An error occurred: {exc}")
-    return _csv_response(csv_data, "order_table.csv")
+    download_name = "shipping.csv"
+    if get_customer(session.get("customer_id")).id != "peb":
+        download_name = "order_table.csv"
+    return _csv_response(csv_data, download_name)
 
 
 @app.route("/download/prd-plan-table", methods=["POST"])
@@ -901,6 +975,10 @@ def download_resource_table():
     guard = _require_connection_or_redirect()
     if guard is not None:
         return guard
+    if not _bridge_master_allowed("resource"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
     try:
         service = _get_erp_service()
         rows = service.fetch_resource_rows(
@@ -926,15 +1004,18 @@ def download_inventory_table():
         )
     try:
         service = _get_erp_service()
-        rows = service.fetch_inventory_rows(
-            upload=request.files.get("source_excel")
+        rows = aggregate_inventory_rows_by_itm_cd(
+            service.fetch_inventory_rows(upload=request.files.get("source_excel"))
         )
         csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
     except NotSupportedError as exc:
         return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
         return _download_error_response(f"An error occurred: {exc}")
-    return _csv_response(csv_data, "inventory_table.csv")
+    download_name = "CurrentStock.csv"
+    if get_customer(session.get("customer_id")).id != "peb":
+        download_name = "inventory_table.csv"
+    return _csv_response(csv_data, download_name)
 
 
 @app.route("/download/inventory-wip-table", methods=["POST"])
@@ -944,8 +1025,8 @@ def download_inventory_wip_table():
         return guard
     try:
         service = _get_erp_service()
-        rows = service.fetch_inventory_wip_rows(
-            upload=request.files.get("source_excel")
+        rows = aggregate_inventory_rows_by_itm_cd(
+            service.fetch_inventory_wip_rows(upload=request.files.get("source_excel"))
         )
         csv_data = rows_to_csv(rows, INVENTORY_TABLE_HEADERS)
     except NotSupportedError as exc:
@@ -957,6 +1038,9 @@ def download_inventory_wip_table():
 
 @app.route("/resource-cycle-times", methods=["GET"])
 def resource_cycle_times():
+    if not _line_cycle_master_allowed():
+        flash("Cycle Time Master is not available for the current customer.", "error")
+        return redirect(url_for("index"))
     source_name = str(session.get(RESOURCE_CYCLE_SOURCE_SESSION_KEY) or "").strip()
     active_co_cd = _resource_cycle_scope_key()
     try:
@@ -978,6 +1062,9 @@ def resource_cycle_times():
 
 @app.route("/resource-cycle-times", methods=["POST"])
 def save_resource_cycle_times():
+    if not _line_cycle_master_allowed():
+        flash("Cycle Time Master is not available for the current customer.", "error")
+        return redirect(url_for("index"))
     try:
         rows = _fetch_resource_cycle_rows()
     except Exception as exc:  # noqa: BLE001
@@ -1009,6 +1096,9 @@ def save_resource_cycle_times():
 
 @app.route("/resource-cycle-times/delete-row", methods=["POST"])
 def delete_resource_cycle_time_row():
+    if not _line_cycle_master_allowed():
+        flash("Cycle Time Master is not available for the current customer.", "error")
+        return redirect(url_for("index"))
     row_id_raw = (request.form.get("row_id") or "").strip()
     if not row_id_raw.isdigit():
         flash("The row number to delete is invalid.", "error")
@@ -1026,6 +1116,9 @@ def delete_resource_cycle_time_row():
 
 @app.route("/resource-cycle-times/add-row", methods=["POST"])
 def add_resource_cycle_time_row():
+    if not _line_cycle_master_allowed():
+        flash("Cycle Time Master is not available for the current customer.", "error")
+        return redirect(url_for("index"))
     line_code = (request.form.get("new_line_code") or "").strip()
     line_name = (request.form.get("new_line_name") or "").strip()
     cycle_time = (request.form.get("new_cycle_time") or "").strip()
@@ -1053,6 +1146,9 @@ def add_resource_cycle_time_row():
 
 @app.route("/resource-cycle-times/import", methods=["POST"])
 def import_resource_cycle_times():
+    if not _line_cycle_master_allowed():
+        flash("Cycle Time Master is not available for the current customer.", "error")
+        return redirect(url_for("index"))
     upload = request.files.get("resource_csv")
     if not upload or not (upload.filename or "").strip():
         flash("Please select the Resource CSV file to import.", "error")
