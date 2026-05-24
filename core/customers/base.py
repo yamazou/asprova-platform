@@ -42,6 +42,8 @@ class BridgeButton:
     kind: str
     label: str
     disabled: bool = False
+    #: 直前ボタンからの追加余白（px）。flex ``gap`` に加算する。
+    margin_start_px: int = 0
 
 
 @dataclass

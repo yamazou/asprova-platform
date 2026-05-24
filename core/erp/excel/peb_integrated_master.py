@@ -29,7 +29,6 @@ _PROC_MAIN_LINE = ("30", "Main Line")
 _PROC_QA_OUTPUT = ("40", "QA Output")
 _PROC_INFUSION = ("20", "Infusion")
 _QA_OUTPUT_TASK2_EXPR = "21H"
-_QA_OUTPUT_TIME_CONSTRAINT_MIN = "3D"
 _INST_U = "U"
 _INST_I = "I"
 _INST_CD_U = "M"
@@ -72,6 +71,25 @@ def _format_pack_type(value: object) -> str:
     return text
 
 
+def _format_infusion_cycle_task2(value: object) -> str:
+    """``master code`` の Cycle time infusion → ``257PH`` 等形式。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        return f"{int(round(float(value)))}PH"
+    s = str(value).strip().replace(",", "")
+    if not s:
+        return ""
+    if re.fullmatch(r"\d+PH", s, re.IGNORECASE):
+        return f"{int(s[:-2])}PH"
+    m = re.match(r"^(\d+(?:\.\d+)?)", s)
+    if m:
+        return f"{int(round(float(m.group(1))))}PH"
+    return s
+
+
 def _format_ink_cycle_task2(value: object) -> str:
     """Ink シート ``Cycle time (per hour)`` → ``30PH``（``30`` / ``30sp`` など）。"""
     if value is None:
@@ -92,6 +110,24 @@ def _format_ink_cycle_task2(value: object) -> str:
     m = re.match(r"^(\d+)", s)
     if m:
         return f"{int(m.group(1))}PH"
+    return s
+
+
+def _format_time_constraint_min(value: object) -> str:
+    """``master code`` の IMaster_TimeConstraintMin（例: ``3D``, ``4D``）。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        if value == int(value):
+            return f"{int(value)}D"
+        return str(value).strip()
+    s = str(value).strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"\d+\.0+", s):
+        return f"{int(float(s))}D"
     return s
 
 
@@ -163,34 +199,32 @@ def _load_model_mainline_map(rows: list[tuple]) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _load_ink_line_map(rows: list[tuple]) -> dict[str, tuple[str, list[str]]]:
-    """Ink Code → (cycle time text, applicable line codes)."""
+def _load_ink_line_map(rows: list[tuple]) -> dict[str, list[str]]:
+    """Ink Code → ラインコード一覧（master infusion line by Ink）。"""
     if not rows:
         return {}
-    header_idx = _find_header_row(rows, ("Ink Code", "Cycle time (per hour)"))
+    header_idx = _find_header_row(rows, ("Ink Code",))
     header_row = rows[header_idx]
     idx = _header_index_map(header_row)
-    out: dict[str, tuple[str, list[str]]] = {}
+    out: dict[str, list[str]] = {}
+    ink_col = idx.get("inkcode")
+    desc_col = idx.get("inkdescription") or idx.get("description")
+    start_col = 2
+    if desc_col is not None:
+        start_col = int(desc_col) + 1
+    elif ink_col is not None:
+        start_col = int(ink_col) + 2
     for row in rows[header_idx + 1 :]:
         ink = _normalize_item_code(_cell(row, idx, "Ink Code", "Ink code"))
         if not ink:
             continue
-        cycle_raw = _cell(row, idx, "Cycle time (per hour)", "Cycle time")
         lines: list[str] = []
-        ink_col = idx.get("inkcode")
-        cycle_col = idx.get("cycletimeperhour") or idx.get("cycletime")
-        start_col = 0
-        if cycle_col is not None:
-            start_col = int(cycle_col) + 1
-        elif ink_col is not None:
-            start_col = int(ink_col) + 3
-        else:
-            start_col = 3
         for i in range(start_col, len(row)):
             line = str(row[i] or "").strip()
             if line:
                 lines.append(line)
-        out[ink] = (_format_ink_cycle_task2(cycle_raw), lines)
+        if lines:
+            out[ink] = lines
     return out
 
 
@@ -211,6 +245,7 @@ def _imaster_row(
     inst_code: str,
     item_or_resource: str,
     task2: str,
+    time_constraint_min: str = "",
 ) -> dict[str, str]:
     return {
         "IMaster_FinalItemCode": final_item,
@@ -221,9 +256,7 @@ def _imaster_row(
         "IMaster_ItemCodeOrResourceCode": item_or_resource,
         "IMaster_Task2Expr": task2,
         "IMaster_TimeConstraintMin": (
-            _QA_OUTPUT_TIME_CONSTRAINT_MIN
-            if proc_code == _PROC_QA_OUTPUT[1]
-            else ""
+            time_constraint_min if proc_code == _PROC_QA_OUTPUT[1] else ""
         ),
     }
 
@@ -251,7 +284,7 @@ def build_peb_integrated_master_records(raw: bytes) -> list[dict[str, str]]:
         model_rows = [tuple(r) for r in ws_ml.iter_rows(values_only=True)]
         model_map = _load_model_mainline_map(model_rows)
 
-        ink_map: dict[str, tuple[str, list[str]]] = {}
+        ink_map: dict[str, list[str]] = {}
         if _SHEET_INFUSION_BY_INK in wb.sheetnames:
             ws_ink = wb[_SHEET_INFUSION_BY_INK]
             ink_rows = [tuple(r) for r in ws_ink.iter_rows(values_only=True)]
@@ -332,6 +365,15 @@ def build_peb_integrated_master_records(raw: bytes) -> list[dict[str, str]]:
                 )
                 qa_resource = _qa_output_resource_code(mainline)
                 if qa_resource:
+                    qa_time_constraint = _format_time_constraint_min(
+                        _cell(
+                            row,
+                            idx,
+                            "IMaster_TimeConstraintMin",
+                            "IMaster TimeConstraintMin",
+                            "Time Constraint Min",
+                        )
+                    )
                     records.append(
                         _imaster_row(
                             final_item=fg,
@@ -341,38 +383,43 @@ def build_peb_integrated_master_records(raw: bytes) -> list[dict[str, str]]:
                             inst_code=_INST_CD_U,
                             item_or_resource=qa_resource,
                             task2=_QA_OUTPUT_TASK2_EXPR,
+                            time_constraint_min=qa_time_constraint,
                         )
                     )
 
         if ink_map:
             inf_proc_no, inf_proc_code = _PROC_INFUSION
-            seen_infusion_fg: set[str] = set()
+            seen_infusion: set[str] = set()
             for row in data_rows:
                 process = str(_cell(row, idx, "process") or "").strip().lower()
-                if process != "infusion":
+                if process != "main line":
                     continue
-                final_item = _normalize_item_code(_cell(row, idx, "FGcode", "FG Code"))
-                if not final_item or final_item in seen_infusion_fg:
+                infusion_cd = _normalize_item_code(
+                    _cell(row, idx, "Infusion code", "Infusion Code")
+                )
+                if not infusion_cd or infusion_cd in seen_infusion:
                     continue
                 ink = _normalize_item_code(_cell(row, idx, "Ink Code", "Ink code"))
                 if not ink or ink not in ink_map:
                     continue
-                seen_infusion_fg.add(final_item)
-                task2_base, lines = ink_map[ink]
+                seen_infusion.add(infusion_cd)
+                task2_inf = _format_infusion_cycle_task2(
+                    _cell(row, idx, "Cycle time infusion", "Cycle time infusion")
+                )
                 seen_lines: set[str] = set()
-                for line in lines:
+                for line in ink_map[ink]:
                     if not line or line in seen_lines:
                         continue
                     seen_lines.add(line)
                     records.append(
                         _imaster_row(
-                            final_item=final_item,
+                            final_item=infusion_cd,
                             proc_no=inf_proc_no,
                             proc_code=inf_proc_code,
                             inst_type=_INST_U,
                             inst_code=_INST_CD_U,
                             item_or_resource=line,
-                            task2=task2_base,
+                            task2=task2_inf,
                         )
                     )
 

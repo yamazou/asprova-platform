@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+import os
+
+
+def _env(name: str, default: str) -> str:
+    return (os.environ.get(name) or default).strip()
+
+
+# 顧客追加はこの辞書へ 1 エントリ追加するだけで対応可能。
+# 値は Connect モーダルの初期値として使われ、必要に応じてユーザーが上書きできます。
+BRIDGE_CUSTOMERS: dict[str, dict[str, str]] = {
+    
+    "peb": {
+        "label": "PEB",
+        "erp_system": "excel",
+        "oracle_id": "",
+        "oracle_pwd": "",
+        "oracle_schema": "",
+        "oracle_dsn": "",
+        "mcframe_co_cd": "",
+        "excel_base_dir": _env("BRIDGE_PEB_EXCEL_DIR", "data/bridge_excel/peb"),
+        "excel_integrated_file": _env("BRIDGE_PEB_INTEGRATED_FILE", "integrated_master.xlsx"),
+        "excel_item_file": _env("BRIDGE_PEB_ITEM_FILE", "item_table.xlsx"),
+        "excel_order_file": _env("BRIDGE_PEB_ORDER_FILE", "order_table.xlsx"),
+        "excel_prd_plan_file": _env("BRIDGE_PEB_PRD_PLAN_FILE", "prd_plan_table.xlsx"),
+        "excel_resource_file": _env("BRIDGE_PEB_RESOURCE_FILE", "resource_table.xlsx"),
+        "excel_inventory_file": _env("BRIDGE_PEB_INVENTORY_FILE", "inventory_table.xlsx"),
+        "excel_inventory_wip_file": _env("BRIDGE_PEB_INVENTORY_WIP_FILE", "inventory_wip_table.xlsx"),
+    },
+}
+

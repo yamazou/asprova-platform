@@ -57,11 +57,17 @@
         class="btn btn-ghost bridge-transaction-btn--disabled"
         disabled
         aria-disabled="true"
+        {% if btn.margin_start_px %}style="margin-left: {{ btn.margin_start_px }}px;"{% endif %}
       >
         {{ btn.label }}
       </button>
       {% else %}
-      <button type="button" class="btn btn-ghost" onclick="confirmDownload('{{ btn.kind }}')">
+      <button
+        type="button"
+        class="btn btn-ghost"
+        onclick="confirmDownload('{{ btn.kind }}')"
+        {% if btn.margin_start_px %}style="margin-left: {{ btn.margin_start_px }}px;"{% endif %}
+      >
         {{ btn.label }}
       </button>
       {% endif %}
@@ -217,6 +223,10 @@
       <label for="excelSourceFile">Source Excel/CSV</label>
       <input id="excelSourceFile" type="file" accept=".xlsx,.xlsm,.csv,text/csv" />
     </div>
+    <div id="excelItemSourceRow" class="field" style="margin-top:10px; display:none;">
+      <label for="excelItemSourceFile">Item master Excel</label>
+      <input id="excelItemSourceFile" type="file" accept=".xlsx,.xlsm" />
+    </div>
 
     <div class="hint" style="margin-top:12px;">Save to (optional):</div>
     <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
@@ -307,15 +317,34 @@
   const saveFolderLabel = document.getElementById('saveFolderLabel');
   const saveFileName = document.getElementById('saveFileName');
   const excelSourceRow = document.getElementById('excelSourceRow');
+  const excelItemSourceRow = document.getElementById('excelItemSourceRow');
   const excelSourceLabel = document.querySelector('label[for="excelSourceFile"]');
+  const excelItemSourceLabel = document.querySelector('label[for="excelItemSourceFile"]');
   const excelSourceFile = document.getElementById('excelSourceFile');
+  const excelItemSourceFile = document.getElementById('excelItemSourceFile');
   const lineCycleTimeMasterCard = document.getElementById('line-cycle-time-master');
   const monthlyResultCard = document.getElementById('monthly-result-card');
   const customerProfiles = {{ customer_profiles|tojson }};
   const erp = {{ (erp_system or 'mcframe')|tojson }};
+  const connectedCustomerId = {{ (customer_view.id or '')|tojson }};
 
   let confirmTarget = null;
   let directoryHandle = null;
+
+  /** Excel ファイル選択が必要なダウンロード（Excel 顧客または NCI KOITO / HPM / R/L Output）。 */
+  function needsSourceExcelUpload() {
+    return erp === 'excel' || confirmTarget === 'koito' || confirmTarget === 'hpm' || confirmTarget === 'rl_output';
+  }
+
+  function needsSecondaryExcelUpload() {
+    return confirmTarget === 'rl_output' || confirmTarget === 'integrated';
+  }
+
+  function secondaryExcelFormField() {
+    if (confirmTarget === 'rl_output') return 'item_excel';
+    if (confirmTarget === 'integrated') return 'item_line_excel';
+    return '';
+  }
 
   function clearDirectoryHandle(message) {
     directoryHandle = null;
@@ -438,30 +467,59 @@
     confirmTarget = target;
     clearDirectoryHandle();
     if (excelSourceFile) excelSourceFile.value = '';
-    if (excelSourceRow) excelSourceRow.style.display = erp === 'excel' ? '' : 'none';
+    if (excelItemSourceFile) excelItemSourceFile.value = '';
+    if (excelSourceRow) {
+      excelSourceRow.style.display = (erp === 'excel' || target === 'koito' || target === 'hpm' || target === 'rl_output') ? '' : 'none';
+    }
+    if (excelItemSourceRow) {
+      excelItemSourceRow.style.display = (target === 'rl_output' || target === 'integrated') ? '' : 'none';
+    }
     if (excelSourceLabel) excelSourceLabel.textContent = 'Source Excel/CSV';
     if (target === 'integrated') {
-      confirmMessage.textContent = erp === 'sap_b1'
-        ? 'Data is retrieved from dbo.OITT_TMP and dbo.ITT1_TMP (SAP B1 / SQL Server).'
-        : (erp === 'excel'
-          ? 'Data is built from worksheets "master code" and "Master main line by model" in the selected Excel file.'
-          : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.');
-      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (master data)';
+      if (connectedCustomerId === 'nci') {
+        confirmMessage.textContent =
+          'Build integrated_master.csv from BOM Excel, ItemLine Excel, and Cycle Time Master (SQLite).';
+        if (excelSourceLabel) excelSourceLabel.textContent = 'BOM Excel';
+        if (excelItemSourceLabel) excelItemSourceLabel.textContent = 'ItemLine Excel';
+      } else {
+        confirmMessage.textContent = erp === 'sap_b1'
+          ? 'Data is retrieved from dbo.OITT_TMP and dbo.ITT1_TMP (SAP B1 / SQL Server).'
+          : (erp === 'excel'
+            ? 'Data is built from worksheets "master code" and "Master main line by model" in the selected Excel file.'
+            : 'Data is retrieved from SM_BOM_ALL and SM_HINLINE_ALL.');
+        if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (master data)';
+      }
       downloadForm.action = "{{ url_for('download_integrated') }}";
-      saveFileName.value = 'IntegratedMaster.csv';
+      saveFileName.value = 'integrated_master.csv';
+    } else if (target === 'rl_output') {
+      confirmMessage.textContent =
+        'Build IntegratedMaster_OutputInstruction.csv from Delivery date Excel (R/L PART NAME pairs). mcframe Item code is resolved from Item master Notes (PART CODE).';
+      if (excelSourceLabel) {
+        excelSourceLabel.textContent = 'Delivery date Excel';
+      }
+      if (excelItemSourceLabel) {
+        excelItemSourceLabel.textContent = 'Item master Excel (Notes → Item CD)';
+      }
+      downloadForm.action = "{{ url_for('download_rl_output') }}";
+      saveFileName.value = 'IntegratedMaster_OutputInstruction.csv';
     } else if (target === 'item') {
-      confirmMessage.textContent = erp === 'sap_b1'
-        ? 'Data is retrieved from dbo.OITM_TMP (SAP B1 / SQL Server).'
-        : (erp === 'excel'
-          ? 'Data is retrieved from selected source Excel/CSV.'
-          : 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALL.');
+      if (connectedCustomerId === 'nci') {
+        confirmMessage.textContent = 'Build item_table.csv from Item master Excel.';
+        if (excelSourceLabel) excelSourceLabel.textContent = 'Item master Excel';
+      } else {
+        confirmMessage.textContent = erp === 'sap_b1'
+          ? 'Data is retrieved from dbo.OITM_TMP (SAP B1 / SQL Server).'
+          : (erp === 'excel'
+            ? 'Data is retrieved from selected source Excel/CSV.'
+            : 'Data is retrieved from CM_HINMO_ALL and SM_HINMOS_ALL.');
+      }
       downloadForm.action = "{{ url_for('download_item_table') }}";
       saveFileName.value = 'item_table.csv';
     } else if (target === 'order') {
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.SHIP_SCH (SAP B1 / SQL Server).'
         : (erp === 'excel'
-          ? 'Columns: ITM_CD←Actual Item, DLV_DT←exfact, REQ_QTY←Qty, CUST_CD=Shipping.'
+          ? 'Columns: ITM_CD←Actual Item, DLV_DT←exfact, REQ_QTY←Qty, CUST_CD←customer.'
           : 'Data is retrieved from ST_SHOYO_ALL.');
       if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (shipping plan)';
       downloadForm.action = "{{ url_for('download_order_table') }}";
@@ -474,14 +532,21 @@
       downloadForm.action = "{{ url_for('download_prd_plan_table') }}";
       saveFileName.value = 'prd_plan_table.csv';
     } else if (target === 'inventory') {
+      const customerId = document.getElementById('customer_id')?.value || '';
       confirmMessage.textContent = erp === 'sap_b1'
         ? 'Data is retrieved from dbo.BEG_INV (SAP B1 / SQL Server).'
-        : (erp === 'excel'
-          ? 'Columns: ITM_CD←Material, STK_QTY←Available (aggregated by ITM_CD).'
-          : 'Data is retrieved from ST_GNZAIKO_ALL.');
-      if (erp === 'excel' && excelSourceLabel) excelSourceLabel.textContent = 'Source Excel (current stock)';
+        : (customerId === 'nci'
+          ? 'ITM_CD←Item CD, STK_QTY←Allocatable qty (sum per item, minus 100,000 repeatedly).'
+          : (erp === 'excel'
+            ? 'Columns: ITM_CD←Material, STK_QTY←Available (aggregated by ITM_CD).'
+            : 'Data is retrieved from ST_GNZAIKO_ALL.'));
+      if (erp === 'excel' && excelSourceLabel) {
+        excelSourceLabel.textContent = customerId === 'nci'
+          ? 'Inventory Excel (Current stock list)'
+          : 'Source Excel (current stock)';
+      }
       downloadForm.action = "{{ url_for('download_inventory_table') }}";
-      saveFileName.value = 'CurrentStock.csv';
+      saveFileName.value = customerId === 'nci' ? 'inventory_table.csv' : 'CurrentStock.csv';
     } else if (target === 'inventory_wip') {
       confirmMessage.textContent = erp === 'excel'
         ? 'Data is retrieved from the worksheet starting with "Stock_list_" in the selected Excel file.'
@@ -490,11 +555,32 @@
       downloadForm.action = "{{ url_for('download_inventory_wip_table') }}";
       saveFileName.value = 'inventory_wip_table.csv';
     } else if (target === 'resource') {
-      confirmMessage.textContent = erp === 'excel'
-        ? 'Data is retrieved from selected source Excel/CSV.'
-        : 'Data is retrieved from SM_LINE_ALL.';
+      if (connectedCustomerId === 'nci') {
+        confirmMessage.textContent = 'Build resource_table.csv from Line master Excel.';
+        if (excelSourceLabel) excelSourceLabel.textContent = 'Line master Excel';
+      } else {
+        confirmMessage.textContent = erp === 'excel'
+          ? 'Data is retrieved from selected source Excel/CSV.'
+          : 'Data is retrieved from SM_LINE_ALL.';
+      }
       downloadForm.action = "{{ url_for('download_resource_table') }}";
       saveFileName.value = 'resource_table.csv';
+    } else if (target === 'koito') {
+      confirmMessage.textContent =
+        'Build delivery_schedule_KOITO.csv from Delivery date Excel (ORDER CD=KOITO00001…, Item CD, Date, Qty, Kanban, Customer=KOITO).';
+      if (excelSourceLabel) {
+        excelSourceLabel.textContent = 'Source Excel (Delivery date)';
+      }
+      downloadForm.action = "{{ url_for('download_koito_delivery') }}";
+      saveFileName.value = 'delivery_schedule_KOITO.csv';
+    } else if (target === 'hpm') {
+      confirmMessage.textContent =
+        'Build delivery_schedule_HPM.csv from Delivery date Excel (MODEL or COLOR rows with daily qty; Customer=sheet name; ORDER CD=HPM00001…).';
+      if (excelSourceLabel) {
+        excelSourceLabel.textContent = 'Source Excel (Delivery date)';
+      }
+      downloadForm.action = "{{ url_for('download_hpm_delivery') }}";
+      saveFileName.value = 'delivery_schedule_HPM.csv';
     } else {
       return;
     }
@@ -639,8 +725,20 @@
     if (!excelSourceFile || !excelSourceFile.files || excelSourceFile.files.length === 0) {
       throw new Error('Source file is not selected');
     }
+    if (
+      needsSecondaryExcelUpload() &&
+      (!excelItemSourceFile || !excelItemSourceFile.files || excelItemSourceFile.files.length === 0)
+    ) {
+      throw new Error('Secondary source file is not selected');
+    }
     const fd = new FormData();
     fd.append('source_excel', excelSourceFile.files[0]);
+    if (needsSecondaryExcelUpload()) {
+      const secondaryField = secondaryExcelFormField();
+      if (secondaryField) {
+        fd.append(secondaryField, excelItemSourceFile.files[0]);
+      }
+    }
     const resp = await fetch(downloadForm.action, {
       method: 'POST',
       credentials: 'same-origin',
@@ -669,7 +767,7 @@
   }
 
   async function fetchDownloadBlob() {
-    if (erp === 'excel') {
+    if (needsSourceExcelUpload()) {
       return await fetchExcelBlob();
     }
     const resp = await fetch(downloadForm.action, {
@@ -704,7 +802,7 @@
           'Fallback: ' + fallbackDetail + '\n\n' +
           'Tip: Close the CSV in Excel if it is open, or export without "Choose folder".'
         );
-        if (erp !== 'excel') {
+        if (!needsSourceExcelUpload()) {
           downloadForm.submit();
         }
       }
@@ -713,14 +811,24 @@
 
   function doConfirm() {
     if (!confirmTarget) return;
-    if (erp === 'excel' && (!excelSourceFile || !excelSourceFile.files || excelSourceFile.files.length === 0)) {
-      alert('Please select a source Excel/CSV file.');
+    if (
+      needsSourceExcelUpload() &&
+      (!excelSourceFile || !excelSourceFile.files || excelSourceFile.files.length === 0)
+    ) {
+      alert('Please select a source Excel file.');
+      return;
+    }
+    if (
+      needsSecondaryExcelUpload() &&
+      (!excelItemSourceFile || !excelItemSourceFile.files || excelItemSourceFile.files.length === 0)
+    ) {
+      alert('Please select the second source Excel file.');
       return;
     }
     if (directoryHandle && canUseFolderPicker()) {
       downloadWithChosenFolder().finally(() => closeConfirm());
     } else {
-      if (erp === 'excel') {
+      if (needsSourceExcelUpload()) {
         downloadExcelByBrowser()
           .catch((err) => {
             console.error(err);

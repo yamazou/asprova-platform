@@ -349,6 +349,8 @@ def load_peb_order_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, str,
         idx_qty = _idx("Qty", "REQ_QTY")
         idx_dlv = _idx("exfact", "Exfact Date", "Exfact", "DLV_DT")
         idx_req = _idx("Index", "REQ_NO")
+        idx_customer = _idx("customer", "Customer", "CUST_CD")
+        idx_cust = _idx("customer", "Customer", "CUST_CD")
 
         if idx_item is None or idx_qty is None or idx_dlv is None:
             raise RuntimeError(
@@ -376,8 +378,16 @@ def load_peb_order_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, str, str,
             if not req_no:
                 req_no = str(seq)
 
+            if idx_customer is not None:
+                cust_raw = (
+                    values[idx_customer] if idx_customer < len(values) else ""
+                )
+                cust_cd = str(cust_raw).strip() if cust_raw is not None else ""
+            else:
+                cust_cd = "Shipping"
+
             out.append(
-                (req_no, item, _format_excel_date(dlv_raw), qty_text, "Shipping")
+                (req_no, item, _format_excel_date(dlv_raw), qty_text, cust_cd)
             )
             seq += 1
         return out
@@ -686,5 +696,103 @@ def load_peb_monthly_result_rows_from_xlsx_bytes(raw: bytes) -> list[dict[str, s
             }
             for k in keys
         ]
+    finally:
+        wb.close()
+
+
+# ---------------------------------------------------------------------------
+# Item Table (master code → Item_Code / Item_Spec*)
+# ---------------------------------------------------------------------------
+
+PEB_ITEM_TABLE_HEADERS = (
+    "Item_Code",
+    "Item_Name",
+    "Item_Spec1Code",
+    "Item_Spec2Code",
+    "Item_Spec3Code",
+    "Item_Spec4Code",
+)
+
+_SHEET_MASTER_CODE = "master code"
+
+
+def _peb_display_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value == int(value):
+        return str(int(value))
+    if isinstance(value, int):
+        return str(value)
+    return str(value).strip()
+
+
+def _peb_find_header_row(rows: list[tuple], required: tuple[str, ...]) -> int:
+    req = {_normalize_header_name(n) for n in required}
+    for i, row in enumerate(rows[:40]):
+        keys = {_normalize_header_name(v) for v in row if v is not None}
+        if req.issubset(keys):
+            return i
+    return 0
+
+
+def _peb_cell(row: tuple, idx_map: dict[str, int], *names: str) -> object:
+    for name in names:
+        key = _normalize_header_name(name)
+        i = idx_map.get(key)
+        if i is None or i >= len(row):
+            continue
+        return row[i]
+    return None
+
+
+def load_peb_item_table_rows_from_xlsx_bytes(raw: bytes) -> list[tuple[str, ...]]:
+    """``master code`` の Main line 行から Item Table CSV 行を生成する。"""
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "openpyxl is required to read Excel (.xlsx) files."
+        ) from exc
+
+    wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
+    try:
+        if _SHEET_MASTER_CODE not in wb.sheetnames:
+            raise RuntimeError(
+                f'PEB Item Table requires a "{_SHEET_MASTER_CODE}" worksheet.'
+            )
+        ws = wb[_SHEET_MASTER_CODE]
+        mc_rows = [tuple(r) for r in ws.iter_rows(values_only=True)]
+        if not mc_rows:
+            return []
+
+        header_idx = _peb_find_header_row(
+            mc_rows,
+            ("FGcode", "Model", "process", "Ink Code", "Ink Description", "Ink Bag"),
+        )
+        header_row = mc_rows[header_idx]
+        idx = _header_index_map(header_row)
+        out: list[tuple[str, ...]] = []
+        for row in mc_rows[header_idx + 1 :]:
+            process = str(_peb_cell(row, idx, "process") or "").strip().lower()
+            if process != "main line":
+                continue
+            fg = _normalize_peb_item_code(_peb_cell(row, idx, "FGcode", "FG Code"))
+            if not fg:
+                continue
+            out.append(
+                (
+                    fg,
+                    "",
+                    _peb_display_text(_peb_cell(row, idx, "Model")),
+                    _peb_display_text(
+                        _peb_cell(row, idx, "Ink Description", "Ink description")
+                    ),
+                    _normalize_peb_item_code(
+                        _peb_cell(row, idx, "Ink Code", "Ink code")
+                    ),
+                    _peb_display_text(_peb_cell(row, idx, "Ink Bag", "Ink bag")),
+                )
+            )
+        return out
     finally:
         wb.close()

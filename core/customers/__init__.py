@@ -48,7 +48,7 @@ _REGISTRY: dict[str, tuple[str, str]] = {
 def get_customer(customer_id: Optional[str]) -> CustomerStrategy:
     """顧客 ID から Strategy を取得する。未登録の場合は ``DefaultCustomer``。
 
-    NCI は ``NciCustomer`` で Bridge の Order / Inventory を無効表示する。
+    NCI は ``NciCustomer`` で Excel マスタ出力と KOITO/HPM スケジュールを提供する。
     SW / DEMO のような他顧客はレジストリ非登録のまま
     ``DefaultCustomer`` を共有する。
     """

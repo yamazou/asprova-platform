@@ -53,6 +53,18 @@ from core.parsers.csv_loader import rows_to_csv
 from core.erp._base import BridgeErpService, NotSupportedError
 from core.erp.inventory_aggregate import aggregate_inventory_rows_by_itm_cd
 from core.customers import get_customer
+from core.erp.excel.nci_rl_output import (
+    NCI_RL_OUTPUT_HEADERS,
+    build_nci_rl_output_records,
+)
+from core.erp.excel.nci_hpm_schedule import (
+    HPM_SCHEDULE_HEADERS,
+    build_hpm_delivery_schedule_rows,
+)
+from core.erp.excel.nci_koito_schedule import (
+    KOITO_SCHEDULE_HEADERS,
+    build_koito_delivery_schedule_rows,
+)
 from config.bridge_customers import BRIDGE_CUSTOMERS
 from config.settings import DB_PATH
 
@@ -161,9 +173,14 @@ def _open_resource_cycle_db() -> sqlite3.Connection:
 
 
 def _resource_cycle_scope_key() -> str:
-    """Line Cycle Time のデータ分離キー。mcframe は co_cd、excel は customer_id。"""
-    erp = get_erp_system()
+    """Line Cycle Time のデータ分離キー。mcframe は co_cd、excel は customer_id。
+
+    NCI は従来 mcframe 接続時と同じ ``NCI`` キーで Cycle Time を保持する。
+    """
     customer_id = str(session.get("customer_id") or "").strip().lower()
+    if customer_id == "nci":
+        return RESOURCE_CYCLE_LEGACY_CO_CD
+    erp = get_erp_system()
     if erp == "excel" and customer_id:
         return customer_id
     raw = (session.get("mcframe_co_cd") or "").strip().upper()
@@ -886,18 +903,36 @@ def download_integrated():
             "This download is not available for the current customer."
         )
     try:
-        service = _get_erp_service()
         customer = get_customer(session.get("customer_id"))
         headers = (
             customer.integrated_master_csv_headers()
             if hasattr(customer, "integrated_master_csv_headers")
             else INTEGRATED_HEADERS
         )
-        records = service.fetch_integrated_records(
-            upload=request.files.get("source_excel")
-        )
-        if headers == INTEGRATED_HEADERS:
+        if customer.id == "nci":
+            from core.customers.nci import build_nci_integrated_from_uploads
+
+            bom_upload = request.files.get("source_excel")
+            item_line_upload = request.files.get("item_line_excel")
+            if not bom_upload or not getattr(bom_upload, "filename", ""):
+                return _download_error_response("BOM Excel file is not selected.")
+            if not item_line_upload or not getattr(item_line_upload, "filename", ""):
+                return _download_error_response("ItemLine Excel file is not selected.")
+            bom_raw = bom_upload.read()
+            item_line_raw = item_line_upload.read()
+            if not bom_raw:
+                return _download_error_response("The selected BOM file is empty.")
+            if not item_line_raw:
+                return _download_error_response("The selected ItemLine file is empty.")
+            records = build_nci_integrated_from_uploads(bom_raw, item_line_raw)
             records = _apply_cycle_time_to_integrated_records(records)
+        else:
+            service = _get_erp_service()
+            records = service.fetch_integrated_records(
+                upload=request.files.get("source_excel")
+            )
+            if headers == INTEGRATED_HEADERS:
+                records = _apply_cycle_time_to_integrated_records(records)
         rows = [tuple(d[h] for h in headers) for d in records]
         csv_data = rows_to_csv(rows, headers)
     except NotSupportedError as exc:
@@ -917,16 +952,28 @@ def download_item_table():
             "This download is not available for the current customer."
         )
     try:
-        service = _get_erp_service()
-        rows = _sanitize_item_table_rows(
-            service.fetch_item_rows(upload=request.files.get("source_excel"))
+        customer = get_customer(session.get("customer_id"))
+        headers = (
+            customer.item_table_csv_headers()
+            if hasattr(customer, "item_table_csv_headers")
+            else ITEM_TABLE_HEADERS
         )
-        csv_data = rows_to_csv(rows, ITEM_TABLE_HEADERS)
+        service = _get_erp_service()
+        item_upload = request.files.get("source_excel")
+        if customer.id == "nci" and (
+            not item_upload or not getattr(item_upload, "filename", "")
+        ):
+            return _download_error_response("Item master Excel file is not selected.")
+        rows = _sanitize_item_table_rows(
+            service.fetch_item_rows(upload=item_upload)
+        )
+        csv_data = rows_to_csv(rows, headers)
     except NotSupportedError as exc:
         return _download_error_response(str(exc))
     except Exception as exc:  # noqa: BLE001
         return _download_error_response(f"An error occurred: {exc}")
-    return _csv_response(csv_data, "item_table.csv")
+    download_name = "item.csv" if getattr(customer, "id", "") == "peb" else "item_table.csv"
+    return _csv_response(csv_data, download_name)
 
 
 @app.route("/download/order-table", methods=["POST"])
@@ -950,6 +997,116 @@ def download_order_table():
     if get_customer(session.get("customer_id")).id != "peb":
         download_name = "order_table.csv"
     return _csv_response(csv_data, download_name)
+
+
+@app.route("/download/koito-delivery", methods=["POST"])
+def download_koito_delivery():
+    """NCI: Delivery date Excel → delivery_schedule_KOITO.csv (KOITO ボタン専用)."""
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
+    if get_customer(session.get("customer_id")).id != "nci":
+        return _download_error_response(
+            "KOITO export is only available when connected as NCI."
+        )
+    if not _bridge_kind_download_allowed("koito"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
+    upload = request.files.get("source_excel")
+    if not upload or not getattr(upload, "filename", ""):
+        return _download_error_response("Source Excel file is not selected.")
+    raw = upload.read()
+    if not raw:
+        return _download_error_response("The selected source file is empty.")
+    suffix = Path(str(upload.filename or "")).suffix.lower()
+    if suffix not in (".xlsx", ".xlsm"):
+        return _download_error_response(
+            "Unsupported file type. Please select an Excel file (.xlsx)."
+        )
+    try:
+        rows = build_koito_delivery_schedule_rows(raw)
+        csv_data = rows_to_csv(rows, list(KOITO_SCHEDULE_HEADERS))
+    except Exception as exc:  # noqa: BLE001
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "delivery_schedule_KOITO.csv")
+
+
+@app.route("/download/rl-output", methods=["POST"])
+def download_rl_output():
+    """NCI: Delivery date Excel → IntegratedMaster_OutputInstruction.csv."""
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
+    if get_customer(session.get("customer_id")).id != "nci":
+        return _download_error_response(
+            "R/L Output is only available when connected as NCI."
+        )
+    if not _bridge_master_allowed("rl_output"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
+    delivery_upload = request.files.get("source_excel")
+    item_upload = request.files.get("item_excel")
+    if not delivery_upload or not getattr(delivery_upload, "filename", ""):
+        return _download_error_response("Delivery date Excel file is not selected.")
+    if not item_upload or not getattr(item_upload, "filename", ""):
+        return _download_error_response("Item master Excel file is not selected.")
+    delivery_raw = delivery_upload.read()
+    item_raw = item_upload.read()
+    if not delivery_raw:
+        return _download_error_response("The selected delivery date file is empty.")
+    if not item_raw:
+        return _download_error_response("The selected item master file is empty.")
+    for upload, label in (
+        (delivery_upload, "Delivery date"),
+        (item_upload, "Item master"),
+    ):
+        suffix = Path(str(upload.filename or "")).suffix.lower()
+        if suffix not in (".xlsx", ".xlsm"):
+            return _download_error_response(
+                f"{label}: unsupported file type. Please select an Excel file (.xlsx)."
+            )
+    try:
+        records = build_nci_rl_output_records(delivery_raw, item_raw)
+        rows = [tuple(d[h] for h in NCI_RL_OUTPUT_HEADERS) for d in records]
+        csv_data = rows_to_csv(rows, list(NCI_RL_OUTPUT_HEADERS))
+    except Exception as exc:  # noqa: BLE001
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "IntegratedMaster_OutputInstruction.csv")
+
+
+@app.route("/download/hpm-delivery", methods=["POST"])
+def download_hpm_delivery():
+    """NCI: Delivery date Excel → delivery_schedule_HPM.csv (HPM ボタン専用)."""
+    guard = _require_connection_or_redirect()
+    if guard is not None:
+        return guard
+    if get_customer(session.get("customer_id")).id != "nci":
+        return _download_error_response(
+            "HPM export is only available when connected as NCI."
+        )
+    if not _bridge_kind_download_allowed("hpm"):
+        return _download_error_response(
+            "This download is not available for the current customer."
+        )
+    upload = request.files.get("source_excel")
+    if not upload or not getattr(upload, "filename", ""):
+        return _download_error_response("Source Excel file is not selected.")
+    raw = upload.read()
+    if not raw:
+        return _download_error_response("The selected source file is empty.")
+    suffix = Path(str(upload.filename or "")).suffix.lower()
+    if suffix not in (".xlsx", ".xlsm"):
+        return _download_error_response(
+            "Unsupported file type. Please select an Excel file (.xlsx)."
+        )
+    try:
+        rows = build_hpm_delivery_schedule_rows(raw)
+        csv_data = rows_to_csv(rows, list(HPM_SCHEDULE_HEADERS))
+    except Exception as exc:  # noqa: BLE001
+        return _download_error_response(f"An error occurred: {exc}")
+    return _csv_response(csv_data, "delivery_schedule_HPM.csv")
 
 
 @app.route("/download/prd-plan-table", methods=["POST"])
@@ -980,11 +1137,27 @@ def download_resource_table():
             "This download is not available for the current customer."
         )
     try:
-        service = _get_erp_service()
-        rows = service.fetch_resource_rows(
-            upload=request.files.get("source_excel"),
-            sort_order_map=_load_sort_order_map_from_sqlite(),
-        )
+        customer = get_customer(session.get("customer_id"))
+        resource_upload = request.files.get("source_excel")
+        sort_map = _load_sort_order_map_from_sqlite()
+        if customer.id == "nci":
+            from core.erp.excel.nci_exports import load_nci_resource_table_rows_from_xlsx_bytes
+
+            if not resource_upload or not getattr(resource_upload, "filename", ""):
+                return _download_error_response("Line master Excel file is not selected.")
+            raw = resource_upload.read()
+            if not raw:
+                return _download_error_response("The selected Line master file is empty.")
+            rows = load_nci_resource_table_rows_from_xlsx_bytes(
+                raw,
+                sort_order_map=sort_map,
+            )
+        else:
+            service = _get_erp_service()
+            rows = service.fetch_resource_rows(
+                upload=resource_upload,
+                sort_order_map=sort_map,
+            )
         csv_data = rows_to_csv(rows, RESOURCE_TABLE_HEADERS)
     except NotSupportedError as exc:
         return _download_error_response(str(exc))
